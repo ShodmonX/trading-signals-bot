@@ -8,6 +8,9 @@ from sqlalchemy import select
 from app.db import Base, engine
 from app.db.models import Crypto, Strategy
 from app.db.session import LocalAsyncSession
+from app.logger import configure_logs
+
+configure_logs()
 
 criptos = [
     {
