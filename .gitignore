@@ -3,3 +3,5 @@ logs/
 __pycache__/
 venv/
 test.py
+.vscode/
+run.py

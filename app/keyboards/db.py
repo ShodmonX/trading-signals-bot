@@ -1,5 +1,6 @@
-from aiogram.utils.keyboard import InlineKeyboardButton, InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 
 def get_add_db_buttons(data, symbol) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
