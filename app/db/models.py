@@ -23,9 +23,8 @@ class User(Base):
 
     __table_args__ = (
         UniqueConstraint(telegram_id, name="uq_users_telegram_id"),
-        UniqueConstraint(username, name="uq_users_username"),
         Index("ix_users_telegram_id", telegram_id),
-        Index("ix_users_username", username)
+        Index("ix_users_username", username),
     )
 
     def to_dict(self):
@@ -112,11 +111,11 @@ class Signal(Base):
     crypto_id:      Mapped[int]             = mapped_column(ForeignKey("cryptos.id"), nullable=False)
 
     signal:         Mapped[str]             = mapped_column(String, nullable=False)
-    stop_loss:      Mapped[float]           = mapped_column(Float)
-    take_profit_1:  Mapped[float]           = mapped_column(Float)
-    take_profit_2:  Mapped[float]           = mapped_column(Float)
-    take_profit_3:  Mapped[float]           = mapped_column(Float)
-    entry_price:    Mapped[float]           = mapped_column(Float)
+    stop_loss:      Mapped[float | None]    = mapped_column(Float, nullable=True)
+    take_profit_1:  Mapped[float | None]    = mapped_column(Float, nullable=True)
+    take_profit_2:  Mapped[float | None]    = mapped_column(Float, nullable=True)
+    take_profit_3:  Mapped[float | None]    = mapped_column(Float, nullable=True)
+    entry_price:    Mapped[float | None]    = mapped_column(Float, nullable=True)
     position_size:  Mapped[float | None]    = mapped_column(Float, nullable=True)
     in_position:    Mapped[bool]            = mapped_column(Boolean, default=False, server_default=text("'false'"))
     created_at:     Mapped[datetime]        = mapped_column(DateTime, default=func.now(), server_default=func.now())

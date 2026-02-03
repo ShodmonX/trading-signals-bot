@@ -1,28 +1,31 @@
 from aiogram import Bot, Dispatcher
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler # type: ignore
 import asyncio
 import logging
 
 from .config import get_settings
 from .schedulers.schedulers import check_signals
-from .schedulers.starter import start_scheduler
+from .schedulers.starter import start_scheduler, scheduler
 from .handlers import router
+from .services.api import BinanceAPI
 from app.logger import configure_logs
 
 
 settings = get_settings()
 bot = Bot(token=settings.BOT_TOKEN)
-scheduler = AsyncIOScheduler()
 
 async def on_startup():
     start_scheduler(bot, check_signals)
+    logging.info("Scheduler ishga tushdi")
     await bot.send_message(settings.ADMIN_ID, "Bot muvaffaqiyatli ishga tushurildi.")
 
 async def on_shutdown():
+    await BinanceAPI.close_session()
+    scheduler.shutdown()
+    logging.info("Scheduler va API sessiyasi yopildi")
     await bot.send_message(settings.ADMIN_ID, "Bot ishdan to'xtadi.")
-async def main():
 
+async def main():
     dp = Dispatcher()
     dp.include_router(router)
     dp.startup.register(on_startup)
