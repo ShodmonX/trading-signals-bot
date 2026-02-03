@@ -1,3 +1,4 @@
+from typing import Any
 from ta.trend import EMAIndicator, ADXIndicator, MACD, SMAIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands, AverageTrueRange
@@ -55,7 +56,7 @@ class BaseStrategy:
             "other_data": other_data
         }
     
-    def generate_text(self) -> str:
+    def generate_text(self) -> tuple[str, str]:
         result = self.get_context()
         text = f"{self.symbol} - {self.get_name()}\n\n"
         if result['signal'] != 'NEUTRAL':

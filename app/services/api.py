@@ -1,8 +1,38 @@
 import aiohttp
 import asyncio
 import logging
+from typing import Any
 
-async def get_klines(symbol, interval='1h', limit=15, retries=3, delay=2):
+
+class BinanceAPI:
+    """Binance API uchun singleton sessiya boshqaruvchisi"""
+    _session: aiohttp.ClientSession | None = None
+    
+    @classmethod
+    async def get_session(cls) -> aiohttp.ClientSession:
+        """Mavjud sessiyani qaytaradi yoki yangi yaratadi"""
+        if cls._session is None or cls._session.closed:
+            cls._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30),
+                headers={"User-Agent": "TradingSignalsBot/1.0"}
+            )
+        return cls._session
+    
+    @classmethod
+    async def close_session(cls) -> None:
+        """Sessiyani yopish (bot to'xtaganda chaqiriladi)"""
+        if cls._session and not cls._session.closed:
+            await cls._session.close()
+            cls._session = None
+
+
+async def get_klines(
+    symbol: str, 
+    interval: str = '1h', 
+    limit: int = 15, 
+    retries: int = 3, 
+    delay: int = 2
+) -> tuple[list[Any] | None, str | None]:
     """
     Binance API'dan klines (OHLCV) ma'lumotlarini asinxron tarzda oladi.
     
@@ -12,7 +42,6 @@ async def get_klines(symbol, interval='1h', limit=15, retries=3, delay=2):
         limit (int): Olinadigan klines soni (maksimum 1000). Sukut bo'yicha 15.
         retries (int): Qayta urinishlar soni. Sukut bo'yicha 3.
         delay (int): Qayta urinishlar orasidagi kutish vaqti (soniyalarda). Sukut bo'yicha 2.
-        session (aiohttp.ClientSession, optional): HTTP sessiyasi. Agar berilmasa, yangi yaratiladi.
     
     Returns:
         tuple: (klines, error)
@@ -28,33 +57,35 @@ async def get_klines(symbol, interval='1h', limit=15, retries=3, delay=2):
         limit = 1000
     
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit+1}"
-    session = aiohttp.ClientSession()
+    session = await BinanceAPI.get_session()
     
-    try:
-        for attempt in range(retries):
-            try:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        klines = await response.json()
-                        logging.debug(f"{symbol} - Received {len(klines)} klines")
-                        if not isinstance(klines, list) or len(klines) == 0:
-                            return None, "Empty or invalid klines data"
-                        if not all(len(kline) == 12 for kline in klines):
-                            return None, "Invalid kline format"
-                        return klines[:-1], None
-                    elif response.status == 429:
-                        logging.warning(f"{symbol} - Rate limit exceeded, retrying after 10s")
-                        await asyncio.sleep(10)
-                        continue
-                    else:
-                        logging.debug(f"{symbol} - HTTP Error {response.status}: {await response.text()}")
-                        return None, f"HTTP Error {response.status}: {await response.text()}"
-            except Exception as e:
-                logging.debug(f"{symbol} - Request failed (attempt {attempt + 1}/{retries}): {e}")
-                if attempt < retries - 1:
-                    await asyncio.sleep(delay * (2 ** attempt))  # Exponential backoff
-                continue
-        return None, f"Failed to fetch klines for {symbol} with interval {interval}: Max retries reached"
-    finally:
-        await session.close()
+    for attempt in range(retries):
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    klines = await response.json()
+                    logging.debug(f"{symbol} - Received {len(klines)} klines")
+                    if not isinstance(klines, list) or len(klines) == 0:
+                        return None, "Empty or invalid klines data"
+                    if not all(len(kline) == 12 for kline in klines):
+                        return None, "Invalid kline format"
+                    return klines[:-1], None
+                elif response.status == 429:
+                    logging.warning(f"{symbol} - Rate limit exceeded, retrying after 10s")
+                    await asyncio.sleep(10)
+                    continue
+                else:
+                    error_text = await response.text()
+                    logging.debug(f"{symbol} - HTTP Error {response.status}: {error_text}")
+                    return None, f"HTTP Error {response.status}: {error_text}"
+        except aiohttp.ClientError as e:
+            logging.debug(f"{symbol} - Request failed (attempt {attempt + 1}/{retries}): {e}")
+            if attempt < retries - 1:
+                await asyncio.sleep(delay * (2 ** attempt))  # Exponential backoff
+            continue
+        except Exception as e:
+            logging.error(f"{symbol} - Unexpected error: {e}")
+            return None, f"Unexpected error: {e}"
+    
+    return None, f"Failed to fetch klines for {symbol} with interval {interval}: Max retries reached"
 
