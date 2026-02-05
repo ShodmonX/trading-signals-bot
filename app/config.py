@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import PrivateAttr
 from typing import Type
 
 from functools import lru_cache
@@ -23,7 +24,7 @@ STRATEGIES = {
     "williamsfractalsstrategy": WilliamsFractalsStrategy
 }
 
-check_types = {
+DEFAULT_CHECK_TYPES = {
     'check_5m': True,
     'check_15m': True,
     'check_30m': True,
@@ -39,6 +40,8 @@ class Settings(BaseSettings):
     ADMIN_ID: int
     SYMBOLS: str
     DATABASE_URL: str
+    
+    _check_types: dict[str, bool] = PrivateAttr(default_factory=lambda: DEFAULT_CHECK_TYPES.copy())
 
     @property
     def symbols(self):
@@ -51,8 +54,19 @@ class Settings(BaseSettings):
         return STRATEGIES.copy()
     
     @property
-    def check_types(self):
-        return check_types.copy()
+    def check_types(self) -> dict[str, bool]:
+        return self._check_types
+    
+    def set_check_type(self, key: str, value: bool) -> None:
+        """Bitta check_type ni o'zgartirish"""
+        if key in self._check_types:
+            self._check_types[key] = value
+    
+    def update_check_types(self, data: dict[str, bool]) -> None:
+        """Bir nechta check_type ni o'zgartirish"""
+        for key, value in data.items():
+            if key in self._check_types:
+                self._check_types[key] = value
     
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

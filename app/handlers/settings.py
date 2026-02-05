@@ -21,10 +21,10 @@ async def settings_check_(callback: CallbackQuery):
         return
     if settings.check_types[callback.data]:
         pause_job(callback.data)
-        settings.check_types[callback.data] = False
+        settings.update_check_types({callback.data: False})
     else:
         resume_job(callback.data)
-        settings.check_types[callback.data] = True
+        settings.update_check_types({callback.data: True})
     if not isinstance(callback.message, InaccessibleMessage) and callback.message is not None:
         await callback.message.edit_reply_markup(reply_markup=settings_btns(settings.check_types))
     await callback.answer()

@@ -12,7 +12,8 @@ async def analyze_symbol(
     klines: list[Any], 
     strategy: str | None = None, 
     telegram_id: int = settings.ADMIN_ID, 
-    add_to_db: bool = False
+    add_to_db: bool = False,
+    timeframe: str = '1h'
 ) -> tuple[str, dict[str, Any], dict[str, Any]]:
     """
     Bitta coin uchun strategiyalarni tekshiradi va xabar formatini qaytaradi
@@ -86,6 +87,7 @@ async def analyze_symbol(
                             "strategy_id": strategy_db.id,
                             "crypto_id": crypto_db.id,
                             "signal": signal,
+                            "timeframe": timeframe,
                             "stop_loss": data.get('stop_loss'),
                             "take_profit_1": data.get('take_profit_1'),
                             "take_profit_2": data.get('take_profit_2'),

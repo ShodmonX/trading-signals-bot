@@ -111,6 +111,7 @@ class Signal(Base):
     crypto_id:      Mapped[int]             = mapped_column(ForeignKey("cryptos.id"), nullable=False)
 
     signal:         Mapped[str]             = mapped_column(String, nullable=False)
+    timeframe:      Mapped[str]             = mapped_column(String, nullable=False, default='1h')
     stop_loss:      Mapped[float | None]    = mapped_column(Float, nullable=True)
     take_profit_1:  Mapped[float | None]    = mapped_column(Float, nullable=True)
     take_profit_2:  Mapped[float | None]    = mapped_column(Float, nullable=True)
@@ -133,6 +134,7 @@ class Signal(Base):
         Index("ix_signals_crypto_id", "crypto_id"),
         Index("ix_signals_created_at", "created_at"),
         Index("ix_signals_signal", "signal"),
+        Index("ix_signals_timeframe", "timeframe"),
         Index("ix_signals_in_position_true", "in_position", postgresql_where=(in_position == True)),
     )
 
@@ -149,6 +151,7 @@ class Signal(Base):
             "strategy_id": self.strategy_id,
             "crypto_id": self.crypto_id,
             "signal": self.signal,
+            "timeframe": self.timeframe,
             "stop_loss": self.stop_loss,
             "take_profit_1": self.take_profit_1,
             "take_profit_2": self.take_profit_2,
