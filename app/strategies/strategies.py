@@ -126,26 +126,38 @@ class TrendFollowStrategy(BaseStrategy):
         # Trend score
         trend_score = min(100, abs(ema_diff_pct) * 20)
         
-        if ema21 > ema100 and above_ema21 and above_ema100:
-            # Kuchli LONG signal
+        if ema21 > ema100 and above_ema21 and above_ema100 and adx > 25:
+            # Kuchli LONG signal - kuchli trend
             confidence = (trend_score * 0.4 + adx_score * 0.3 + rsi_score * 0.3)
             direction = "LONG"
-        elif ema21 < ema100 and not above_ema21 and not above_ema100:
-            # Kuchli SHORT signal
+        elif ema21 < ema100 and not above_ema21 and not above_ema100 and adx > 25:
+            # Kuchli SHORT signal - kuchli trend
             confidence = (trend_score * 0.4 + adx_score * 0.3 + rsi_score * 0.3)
             direction = "SHORT"
+        elif ema21 > ema100 and above_ema21 and above_ema100:
+            # O'rta LONG (trend bor, ADX past)
+            confidence = (trend_score * 0.3 + adx_score * 0.2 + rsi_score * 0.2)
+            direction = "LONG"
+        elif ema21 < ema100 and not above_ema21 and not above_ema100:
+            # O'rta SHORT
+            confidence = (trend_score * 0.3 + adx_score * 0.2 + rsi_score * 0.2)
+            direction = "SHORT"
+        elif adx < 20:
+            # Trend yo'q - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
         elif ema21 > ema100:
-            # Zaif LONG (trend bor, lekin price alignment yo'q)
-            confidence = (trend_score * 0.2 + adx_score * 0.1 + rsi_score * 0.1)
+            # Zaif LONG (EMA uptrend, lekin price alignment yo'q)
+            confidence = (trend_score * 0.15 + adx_score * 0.1)
             direction = "LONG"
         elif ema21 < ema100:
             # Zaif SHORT
-            confidence = (trend_score * 0.2 + adx_score * 0.1 + rsi_score * 0.1)
+            confidence = (trend_score * 0.15 + adx_score * 0.1)
             direction = "SHORT"
         else:
-            # Flat market - RSI ga qarab
-            direction = "LONG" if rsi > 50 else "SHORT"
-            confidence = 10.0
+            # Flat market - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
         
         return StrategyResult(
             direction=direction,
@@ -206,6 +218,14 @@ class MACDCrossoverStrategy(BaseStrategy):
         # ADX filter
         adx_multiplier = min(1.0, adx / 25) if adx > 20 else 0.5
         
+        # MACD histogram kuchsiz bo'lsa - NEUTRAL
+        if hist_strength < 20 and not bullish_cross and not bearish_cross:
+            return StrategyResult(
+                direction="NEUTRAL",
+                confidence=0.0,
+                weight=self.weight
+            )
+        
         if bullish_cross and long_trend:
             confidence = hist_strength * adx_multiplier
             direction = "LONG"
@@ -220,18 +240,22 @@ class MACDCrossoverStrategy(BaseStrategy):
             # Mavjud SHORT momentum
             confidence = hist_strength * 0.6 * adx_multiplier
             direction = "SHORT"
+        elif adx < 20:
+            # Trend yo'q - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
         elif macd > macd_signal:
             # MACD bullish, lekin trend alignment yo'q
-            confidence = hist_strength * 0.3 * adx_multiplier
+            confidence = hist_strength * 0.25 * adx_multiplier
             direction = "LONG"
         elif macd < macd_signal:
             # MACD bearish, lekin trend alignment yo'q
-            confidence = hist_strength * 0.3 * adx_multiplier
+            confidence = hist_strength * 0.25 * adx_multiplier
             direction = "SHORT"
         else:
-            # MACD = signal (juda kam holat)
-            direction = "LONG" if close > ema200 else "SHORT"
-            confidence = 5.0
+            # MACD = signal - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
         
         return StrategyResult(
             direction=direction,
@@ -282,21 +306,18 @@ class BollingerBandSqueezeStrategy(BaseStrategy):
             breakout_strength = ((bb_lower - close) / bb_lower) * 1000
             confidence = min(100, breakout_strength * 50) * min(1.5, width_ratio)
             direction = "SHORT"
-        # Band ichida - pozitsiyaga qarab
-        elif bb_pband > 0.8:
-            confidence = (bb_pband - 0.8) * 200  # 0-40 oralig'ida
+        # Aniq zonalarda - past confidence bilan
+        elif bb_pband > 0.85:
+            confidence = (bb_pband - 0.85) * 150  # 0-22 oralig'ida
             direction = "LONG"
-        elif bb_pband < 0.2:
-            confidence = (0.2 - bb_pband) * 200
+        elif bb_pband < 0.15:
+            confidence = (0.15 - bb_pband) * 150
             direction = "SHORT"
-        elif bb_pband > 0.5:
-            # O'rtadan yuqorida - zaif LONG
-            confidence = (bb_pband - 0.5) * 60  # 0-30 oralig'ida
-            direction = "LONG"
+        # O'rta zonada - NEUTRAL
         else:
-            # O'rtadan pastda - zaif SHORT
-            confidence = (0.5 - bb_pband) * 60
-            direction = "SHORT"
+            # Band ichida, aniq pozitsiya yo'q
+            direction = "NEUTRAL"
+            confidence = 0.0
         
         return StrategyResult(
             direction=direction,
@@ -332,30 +353,28 @@ class StochasticOscillatorStrategy(BaseStrategy):
         bullish_cross = prev_k <= prev_d and k > d
         bearish_cross = prev_k >= prev_d and k < d
         
-        # Oversold zone (k < 20)
+        # Oversold zone (k < 20) + bullish crossover
         if k < 20 and bullish_cross:
             # Kuchli long signal
-            confidence = 80 + (20 - k)  # 80-100 oralig'ida
+            confidence = 75 + (20 - k)  # 75-95 oralig'ida
             direction = "LONG"
-        elif k < 30 and k > d:
-            # O'rtacha long signal
-            confidence = 50 + (30 - k)
-            direction = "LONG"
-        # Overbought zone (k > 80)
+        # Overbought zone (k > 80) + bearish crossover
         elif k > 80 and bearish_cross:
-            confidence = 80 + (k - 80)
+            confidence = 75 + (k - 80)  # 75-95 oralig'ida
             direction = "SHORT"
-        elif k > 70 and k < d:
-            confidence = 50 + (k - 70)
-            direction = "SHORT"
-        elif k > d:
-            # K > D = bullish momentum
-            confidence = 20 + abs(k - d) * 0.5
+        # Oversold zone bilan momentum
+        elif k < 25 and k > d:
+            confidence = 45 + (25 - k) * 2  # 45-95 oralig'ida
             direction = "LONG"
-        else:
-            # K < D = bearish momentum
-            confidence = 20 + abs(d - k) * 0.5
+        # Overbought zone bilan momentum
+        elif k > 75 and k < d:
+            confidence = 45 + (k - 75) * 2  # 45-95 oralig'ida
             direction = "SHORT"
+        # O'rta zona (25-75) - NEUTRAL
+        else:
+            # Na overbought, na oversold - signal yo'q
+            direction = "NEUTRAL"
+            confidence = 0.0
         
         return StrategyResult(
             direction=direction,
@@ -392,31 +411,35 @@ class SMACrossoverStrategy(BaseStrategy):
         death_cross = prev_sma50 >= prev_sma200 and sma50 < sma200
         
         if golden_cross:
-            confidence = 85  # Cross bo'lganda yuqori ishonch
+            confidence = 80  # Cross bo'lganda yuqori ishonch
             direction = "LONG"
         elif death_cross:
-            confidence = 85
+            confidence = 80
             direction = "SHORT"
-        elif sma50 > sma200 and close > sma50:
-            # Uptrend davom etmoqda
-            confidence = min(70, 30 + abs(sma_diff_pct) * 10)
+        elif sma50 > sma200 and close > sma50 and abs(sma_diff_pct) > 1:
+            # Aniq uptrend davom etmoqda (kamida 1% spread)
+            confidence = min(65, 35 + abs(sma_diff_pct) * 8)
             direction = "LONG"
-        elif sma50 < sma200 and close < sma50:
-            # Downtrend davom etmoqda
-            confidence = min(70, 30 + abs(sma_diff_pct) * 10)
+        elif sma50 < sma200 and close < sma50 and abs(sma_diff_pct) > 1:
+            # Aniq downtrend davom etmoqda
+            confidence = min(65, 35 + abs(sma_diff_pct) * 8)
             direction = "SHORT"
+        elif abs(sma_diff_pct) < 0.5:
+            # SMAlar juda yaqin - trend yo'q, NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
         elif sma50 > sma200:
-            # Uptrend, lekin price SMA50 dan past
-            confidence = min(40, 15 + abs(sma_diff_pct) * 5)
+            # Uptrend, lekin kuchsiz yoki price alignment yo'q
+            confidence = min(30, 10 + abs(sma_diff_pct) * 4)
             direction = "LONG"
         elif sma50 < sma200:
-            # Downtrend, lekin price SMA50 dan yuqori
-            confidence = min(40, 15 + abs(sma_diff_pct) * 5)
+            # Downtrend, lekin kuchsiz
+            confidence = min(30, 10 + abs(sma_diff_pct) * 4)
             direction = "SHORT"
         else:
-            # SMA50 = SMA200 (juda kam holat)
-            direction = "LONG" if close > sma200 else "SHORT"
-            confidence = 10.0
+            # SMA50 = SMA200 - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
         
         return StrategyResult(
             direction=direction,
@@ -462,29 +485,35 @@ class WilliamsFractalsStrategy(BaseStrategy):
         ema_strength = min(100, ema_spread * 20)
         
         if fractal_up and bullish_ema and low > ema100:
-            confidence = 60 + ema_strength * 0.4
+            confidence = 60 + ema_strength * 0.35
             direction = "LONG"
         elif fractal_down and bearish_ema and high < ema100:
-            confidence = 60 + ema_strength * 0.4
+            confidence = 60 + ema_strength * 0.35
             direction = "SHORT"
-        elif bullish_ema and close > ema20:
-            confidence = 30 + ema_strength * 0.3
+        elif bullish_ema and close > ema20 and ema_spread > 0.5:
+            # Kuchli bullish alignment
+            confidence = 35 + ema_strength * 0.25
             direction = "LONG"
-        elif bearish_ema and close < ema20:
-            confidence = 30 + ema_strength * 0.3
+        elif bearish_ema and close < ema20 and ema_spread > 0.5:
+            # Kuchli bearish alignment
+            confidence = 35 + ema_strength * 0.25
             direction = "SHORT"
+        elif ema_spread < 0.3:
+            # EMAlar juda yaqin - trend yo'q, NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
         elif bullish_ema:
-            # Bullish EMA, lekin price ema20 dan past
-            confidence = 15 + ema_strength * 0.15
+            # Bullish EMA, lekin zaif signal
+            confidence = 15 + ema_strength * 0.1
             direction = "LONG"
         elif bearish_ema:
-            # Bearish EMA, lekin price ema20 dan yuqori
-            confidence = 15 + ema_strength * 0.15
+            # Bearish EMA, lekin zaif signal
+            confidence = 15 + ema_strength * 0.1
             direction = "SHORT"
         else:
-            # EMA alignment yo'q - price pozitsiyasiga qarab
-            direction = "LONG" if close > ema50 else "SHORT"
-            confidence = 10.0
+            # EMA alignment yo'q - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
         
         return StrategyResult(
             direction=direction,

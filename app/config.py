@@ -13,7 +13,7 @@ DEFAULT_CHECK_TYPES = {
 }
 
 # Signal Aggregator sozlamalari
-SIGNAL_THRESHOLD: float = 60.0  # Minimal ishonch darajasi (0-100)
+SIGNAL_THRESHOLD: float = 55.0  # Minimal ishonch darajasi (0-100) - default 55%
 STOP_LOSS_MULTIPLIER: float = 1.5  # ATR multiplier for SL
 TAKE_PROFIT_MULTIPLIERS: list[float] = [1.5, 3.0, 4.5]  # ATR multipliers for TP
 

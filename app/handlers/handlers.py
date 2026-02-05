@@ -18,7 +18,8 @@ TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h']
 def get_timeframe_keyboard() -> ReplyKeyboardMarkup:
     """Timeframe tanlash uchun reply keyboard"""
     buttons = [
-        [KeyboardButton(text=tf) for tf in TIMEFRAMES]
+        [KeyboardButton(text=tf) for tf in TIMEFRAMES],
+        [KeyboardButton(text="📊 Backtest")],
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 

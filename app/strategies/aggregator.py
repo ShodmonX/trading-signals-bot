@@ -111,70 +111,87 @@ class SignalAggregator:
         Strategiya natijalarini birlashtiradi.
         
         Consensus logic:
-        1. Minimum 2 ta strategiya bir xil yo'nalishda bo'lishi kerak
-        2. Ko'pchilik ovoz ustunlik qiladi
-        3. Agar ovozlar teng bo'lsa, weighted confidence qaraladi
-        4. Final confidence = (votes_ratio * avg_confidence)
+        1. Minimum 3 ta strategiya (50%+1) bir xil yo'nalishda bo'lishi kerak
+        2. Consensus confidence = avg_confidence + votes_bonus
+        3. Ko'pchilik ovoz ustunlik qiladi
+        
+        Votes bonus formula:
+        - Har bir qo'shimcha vote (min_votes dan ortiq) uchun +10%
+        - Masalan: 4/6 LONG, avg 40% -> bonus = (4-3)*10 = 10% -> final = 50%
+        - 5/6 LONG, avg 40% -> bonus = (5-3)*10 = 20% -> final = 60%
         """
         
         long_votes = 0
         short_votes = 0
         neutral_votes = 0
         
-        weighted_long_sum = 0.0
-        weighted_short_sum = 0.0
-        total_long_weight = 0.0
-        total_short_weight = 0.0
+        long_confidences: list[float] = []
+        short_confidences: list[float] = []
         
         for result in results:
             if result.direction == "LONG":
                 long_votes += 1
-                weighted_long_sum += result.confidence * result.weight
-                total_long_weight += result.weight
+                long_confidences.append(result.confidence)
             elif result.direction == "SHORT":
                 short_votes += 1
-                weighted_short_sum += result.confidence * result.weight
-                total_short_weight += result.weight
+                short_confidences.append(result.confidence)
             else:
                 neutral_votes += 1
         
-        # Weighted average confidence (faqat o'sha yo'nalishdagi strategiyalar orasida)
-        avg_long_confidence = weighted_long_sum / total_long_weight if total_long_weight > 0 else 0.0
-        avg_short_confidence = weighted_short_sum / total_short_weight if total_short_weight > 0 else 0.0
+        # O'rtacha confidence hisoblash
+        avg_long_confidence = sum(long_confidences) / len(long_confidences) if long_confidences else 0.0
+        avg_short_confidence = sum(short_confidences) / len(short_confidences) if short_confidences else 0.0
         
-        # Total active votes (NEUTRAL dan tashqari)
-        total_active_votes = long_votes + short_votes
-        
-        # Consensus score hisoblash
-        # votes_ratio * average_confidence = final_score
-        if total_active_votes > 0:
-            long_ratio = long_votes / total_active_votes
-            short_ratio = short_votes / total_active_votes
-            
-            # Final consensus score
-            long_score = long_ratio * avg_long_confidence
-            short_score = short_ratio * avg_short_confidence
-        else:
-            long_score = 0.0
-            short_score = 0.0
-            long_ratio = 0.0
-            short_ratio = 0.0
+        # Total votes
+        total_strategies = len(results)
         
         # Yakuniy yo'nalishni aniqlash
         entry_price = float(self.df['close'].iloc[-1])
         
-        # Minimum 2 ta strategiya bir xil yo'nalishda bo'lishi kerak
-        min_votes = 2
+        # Minimum ovoz soni - oddiy ko'pchilik (50%+1)
+        # 6 strategiya uchun min 4 ta, chunki NEUTRAL lar ham hisobga olinadi
+        active_strategies = long_votes + short_votes  # NEUTRAL larni hisobga olmaymiz
+        min_votes = max(3, (active_strategies // 2) + 1) if active_strategies >= 4 else 3
         
-        if long_score >= self.threshold and long_votes >= min_votes and long_score > short_score:
-            direction = "LONG"
-            confidence = long_score
-        elif short_score >= self.threshold and short_votes >= min_votes and short_score > long_score:
-            direction = "SHORT"
-            confidence = short_score
+        # MINIMUM AVG CONFIDENCE - bu qiymatdan past bo'lsa signal chiqmaydi
+        MIN_AVG_CONFIDENCE = 35.0
+        
+        # Votes bonus - har bir qo'shimcha vote uchun +5%
+        # Bu strategiyalar ko'p agree bo'lganda confidence ni biroz oshiradi
+        VOTE_BONUS = 5.0  # Har bir qo'shimcha vote uchun
+        
+        long_bonus = max(0, (long_votes - min_votes)) * VOTE_BONUS
+        short_bonus = max(0, (short_votes - min_votes)) * VOTE_BONUS
+        
+        # Final consensus confidence = avg + bonus (max 95%)
+        # Avg confidence MIN_AVG_CONFIDENCE dan yuqori bo'lishi kerak
+        if long_votes >= min_votes and avg_long_confidence >= MIN_AVG_CONFIDENCE:
+            consensus_long = min(95.0, avg_long_confidence + long_bonus)
         else:
-            direction = "NEUTRAL"
-            confidence = max(long_score, short_score)
+            consensus_long = avg_long_confidence
+            
+        if short_votes >= min_votes and avg_short_confidence >= MIN_AVG_CONFIDENCE:
+            consensus_short = min(95.0, avg_short_confidence + short_bonus)
+        else:
+            consensus_short = avg_short_confidence
+        
+        # Signal shartlari:
+        # 1. Kamida min_votes ta strategiya bir xil yo'nalishda
+        # 2. Consensus confidence >= threshold
+        # 3. Bu yo'nalish boshqasidan ko'p
+        
+        direction = "NEUTRAL"
+        confidence = 0.0
+        
+        if long_votes >= min_votes and consensus_long >= self.threshold and long_votes > short_votes:
+            direction = "LONG"
+            confidence = consensus_long
+        elif short_votes >= min_votes and consensus_short >= self.threshold and short_votes > long_votes:
+            direction = "SHORT"
+            confidence = consensus_short
+        else:
+            # NEUTRAL - eng yuqori consensus confidence ni ko'rsatamiz
+            confidence = max(consensus_long, consensus_short)
         
         # Signal obyektini yaratish
         signal = AggregatedSignal(
@@ -185,8 +202,8 @@ class SignalAggregator:
             long_votes=long_votes,
             short_votes=short_votes,
             neutral_votes=neutral_votes,
-            weighted_long_confidence=long_score,  # Endi bu consensus score
-            weighted_short_confidence=short_score  # Endi bu consensus score
+            weighted_long_confidence=avg_long_confidence,
+            weighted_short_confidence=avg_short_confidence
         )
         
         # SL/TP hisoblash (faqat signal bo'lganda)
