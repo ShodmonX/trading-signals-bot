@@ -19,7 +19,7 @@ async def check_signals(bot, interval='5m'):
             if not klines:
                 logging.error("Klines didn't get by API")
                 return
-            text, data, save_db = await analyze_symbol(symbol, klines, add_to_db=True)
+            text, data, save_db = await analyze_symbol(symbol, klines, add_to_db=True, timeframe=interval)
             if "SHORT" in text or "LONG" in text:
                 if not is_sended:
                     await bot.send_message(settings.ADMIN_ID, f"{interval} timeframe bo'yicha kripto valyutalarni tekshirish")
