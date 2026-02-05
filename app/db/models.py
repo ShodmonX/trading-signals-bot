@@ -1,7 +1,7 @@
-from sqlalchemy import String, BigInteger, Integer, DateTime, ForeignKey, Float, Boolean, Index, UniqueConstraint, text, func
+from sqlalchemy import String, BigInteger, Integer, DateTime, ForeignKey, Float, Boolean, Index, UniqueConstraint, text, func, Text, Date
 from sqlalchemy.orm import DeclarativeBase, mapped_column, Mapped, relationship
 
-from datetime import datetime
+from datetime import datetime, date
 
 
 class Base(DeclarativeBase):
@@ -47,9 +47,10 @@ class User(Base):
 class Strategy(Base):
     __tablename__ = 'strategies'
 
-    id:     Mapped[int] = mapped_column(primary_key=True)
-    name:   Mapped[str] = mapped_column(String, nullable=False)
-    code:   Mapped[str] = mapped_column(String, nullable=False)
+    id:         Mapped[int] = mapped_column(primary_key=True)
+    name:       Mapped[str] = mapped_column(String, nullable=False)
+    code:       Mapped[str] = mapped_column(String, nullable=False)
+    is_active:  Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("'true'"))
 
     signals = relationship("Signal", back_populates="strategy")
 
@@ -60,7 +61,7 @@ class Strategy(Base):
     )
 
     def __repr__(self):
-        return f"Strategy(id={self.id!r}, name={self.name!r}, code={self.code!r})"
+        return f"Strategy(id={self.id!r}, name={self.name!r}, code={self.code!r}, is_active={self.is_active!r})"
 
     def __str__(self):
         return f"Strategy(id={self.id!r}, name={self.name!r}, code={self.code!r})"
@@ -69,7 +70,8 @@ class Strategy(Base):
         return {
             "id": self.id,
             "name": self.name,
-            "code": self.code
+            "code": self.code,
+            "is_active": self.is_active
         }
 
 
@@ -162,6 +164,80 @@ class Signal(Base):
             "comment": self.comment,
             "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "closed_at": self.closed_at.strftime("%Y-%m-%d %H:%M:%S") if self.closed_at else None
+        }
+
+
+class BacktestResult(Base):
+    """Backtest natijalarini saqlash uchun model"""
+    __tablename__ = 'backtest_results'
+
+    id:                 Mapped[int]             = mapped_column(primary_key=True)
+    user_id:            Mapped[int]             = mapped_column(BigInteger, nullable=False)
+    
+    # Parametrlar
+    symbol:             Mapped[str]             = mapped_column(String(20), nullable=False)
+    timeframe:          Mapped[str]             = mapped_column(String(10), nullable=False)
+    threshold:          Mapped[float]           = mapped_column(Float, nullable=False)
+    start_date:         Mapped[date]            = mapped_column(Date, nullable=False)
+    end_date:           Mapped[date]            = mapped_column(Date, nullable=False)
+    
+    # Statistika
+    total_signals:      Mapped[int]             = mapped_column(Integer, default=0)
+    long_signals:       Mapped[int]             = mapped_column(Integer, default=0)
+    short_signals:      Mapped[int]             = mapped_column(Integer, default=0)
+    wins:               Mapped[int]             = mapped_column(Integer, default=0)
+    losses:             Mapped[int]             = mapped_column(Integer, default=0)
+    partial_wins:       Mapped[int]             = mapped_column(Integer, default=0)
+    timeouts:           Mapped[int]             = mapped_column(Integer, default=0)
+    
+    # TP statistikasi
+    tp1_hits:           Mapped[int]             = mapped_column(Integer, default=0)
+    tp2_hits:           Mapped[int]             = mapped_column(Integer, default=0)
+    tp3_hits:           Mapped[int]             = mapped_column(Integer, default=0)
+    
+    # Profit statistikasi
+    total_profit:       Mapped[float]           = mapped_column(Float, default=0.0)
+    average_profit:     Mapped[float]           = mapped_column(Float, default=0.0)
+    average_loss:       Mapped[float]           = mapped_column(Float, default=0.0)
+    max_profit:         Mapped[float]           = mapped_column(Float, default=0.0)
+    max_loss:           Mapped[float]           = mapped_column(Float, default=0.0)
+    profit_factor:      Mapped[float]           = mapped_column(Float, default=0.0)
+    win_rate:           Mapped[float]           = mapped_column(Float, default=0.0)
+    
+    # Trade ma'lumotlari (JSON sifatida)
+    trades_json:        Mapped[str | None]      = mapped_column(Text, nullable=True)
+    
+    # PDF file path
+    pdf_path:           Mapped[str | None]      = mapped_column(String(500), nullable=True)
+    
+    created_at:         Mapped[datetime]        = mapped_column(DateTime, default=func.now(), server_default=func.now())
+
+    __table_args__ = (
+        # Parametrlar bo'yicha unique constraint - ayni parametrlar uchun bitta natija
+        Index("ix_backtest_user_params", "user_id", "symbol", "timeframe", "threshold", "start_date", "end_date"),
+        Index("ix_backtest_user_id", "user_id"),
+        Index("ix_backtest_created_at", "created_at"),
+    )
+
+    def __repr__(self):
+        return f"BacktestResult(id={self.id}, symbol={self.symbol}, timeframe={self.timeframe})"
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "threshold": self.threshold,
+            "start_date": self.start_date.strftime("%Y-%m-%d") if self.start_date else None,
+            "end_date": self.end_date.strftime("%Y-%m-%d") if self.end_date else None,
+            "total_signals": self.total_signals,
+            "wins": self.wins,
+            "losses": self.losses,
+            "win_rate": self.win_rate,
+            "total_profit": self.total_profit,
+            "profit_factor": self.profit_factor,
+            "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else None
         }
 
 

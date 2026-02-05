@@ -1,292 +1,522 @@
-from typing import Any
+from typing import Any, Literal
+from dataclasses import dataclass, field
 from ta.trend import EMAIndicator, ADXIndicator, MACD, SMAIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands, AverageTrueRange
 import pandas as pd
+import numpy as np
 
 from .utils import WilliamsFractals
 
 
+@dataclass
+class StrategyResult:
+    """Har bir strategiya natijasi"""
+    direction: Literal["LONG", "SHORT", "NEUTRAL"]
+    confidence: float  # 0-100 oralig'ida
+    weight: float = 1.0  # strategiya og'irligi
+    name: str = ""
+    indicators: dict = field(default_factory=dict)
+
+
 class BaseStrategy:
-    def __init__(self, data, symbol):
+    """Yangilangan BaseStrategy - confidence asosida ishlaydi"""
+    
+    weight: float = 1.0  # Har bir strategiya uchun og'irlik
+    
+    def __init__(self, data: list, symbol: str):
         self.df = pd.DataFrame(data, columns=[
             "timestamp", "open", "high", "low", "close", "volume",
             'close_time', 'quote_asset_volume', 'trades', 'taker_base_vol',
             'taker_quote_vol', 'ignore'
         ])
-        self.df[['open', 'high', 'low', 'close']] = self.df[['open', 'high', 'low', 'close']].astype(float)
-        self.signal = "NEUTRAL"
+        self.df[['open', 'high', 'low', 'close', 'volume']] = self.df[['open', 'high', 'low', 'close', 'volume']].astype(float)
         self.symbol = symbol
-        self.unsupported_keys = ["timestamp", "open", "high", "low", "volume", 'close_time', 'quote_asset_volume', 'trades', 'taker_base_vol', 'taker_quote_vol', 'ignore', 'long_signal', 'short_signal']
-        self.stop_mul = 1.5
-        self.profit_muls = [1.5, 3, 4.5]
+        self.unsupported_keys = [
+            "timestamp", "open", "high", "low", "volume", 'close_time', 
+            'quote_asset_volume', 'trades', 'taker_base_vol', 'taker_quote_vol', 
+            'ignore', 'long_signal', 'short_signal'
+        ]
 
-    
-    def calculate_indicators(self):
-        """Child classlar o‘zlari keraklisini override qiladi"""
+    def calculate_indicators(self) -> None:
+        """Child klasslar override qiladi"""
         raise NotImplementedError
     
-    def generate_signals(self):
-        """Child classlar o‘zlari override qiladi"""
-        raise NotImplementedError
-    
-    def decide(self):
-        if self.df['long_signal'].iloc[-1]:
-            self.signal = "LONG"
-        elif self.df['short_signal'].iloc[-1]:
-            self.signal = "SHORT"
-
-    def run(self):
-        self.calculate_indicators()
-        self.generate_signals()
-        self.decide()
-        self.calculate_stop_loss_and_take_profit()
-        return self.get_context()
-
-    def get_context(self):
-        last_row = self.df.iloc[-1].to_dict()
-        other_data = {k: v for k, v in last_row.items() if k not in self.unsupported_keys}
-        return {
-            "signal": self.signal,
-            "stop_loss": last_row.get("stop_loss"),
-            "take_profit_1": last_row.get("take_profit_1"),
-            "take_profit_2": last_row.get("take_profit_2"),
-            "take_profit_3": last_row.get("take_profit_3"),
-            "close": last_row.get("close"),
-            "other_data": other_data
-        }
-    
-    def generate_text(self) -> tuple[str, str]:
-        result = self.get_context()
-        text = f"{self.symbol} - {self.get_name()}\n\n"
-        if result['signal'] != 'NEUTRAL':
-            text += f"SIGNAL {result['signal']}{'🔴' if result['signal'] == 'SHORT' else '🔵'}\n\n"
-            for key in result['other_data']:
-                if key not in self.unsupported_keys:
-                    text += f"{key.upper()}: {result['other_data'][key]}\n"
-        else:
-            text += f"SIGNAL {result['signal']}📊\n\n"
-            for key in result['other_data'].keys():
-                if key not in self.unsupported_keys:
-                    text += f"{key.upper()}: {result['other_data'][key]}\n"
-        return text, result['signal']
-    
-    def get_name(self):
-        return self.__class__.__name__
-
-    def calculate_stop_loss_and_take_profit(self):
-        self.df['atr'] = AverageTrueRange(
-            high=self.df['high'],
-            low=self.df['low'],
-            close=self.df['close'],
-            fillna=True
-        ).average_true_range()
+    def get_confidence(self) -> StrategyResult:
+        """
+        Strategiyaning ishonch darajasini qaytaradi.
+        Child klasslar override qiladi.
         
-        long_idx = self.df['long_signal']
-        short_idx = self.df['short_signal']
-
-        # Long pozitsiyalar uchun
-        self.df.loc[long_idx, 'stop_loss'] = self.df.loc[long_idx, 'close'] - self.stop_mul * self.df.loc[long_idx, 'atr']
-        for i, mul in enumerate(self.profit_muls, start=1):
-            self.df.loc[long_idx, f'take_profit_{i}'] = self.df.loc[long_idx, 'close'] + mul * self.df.loc[long_idx, 'atr']
-
-        # Short pozitsiyalar uchun
-        self.df.loc[short_idx, 'stop_loss'] = self.df.loc[short_idx, 'close'] + self.stop_mul * self.df.loc[short_idx, 'atr']
-        for i, mul in enumerate(self.profit_muls, start=1):
-            self.df.loc[short_idx, f'take_profit_{i}'] = self.df.loc[short_idx, 'close'] - mul * self.df.loc[short_idx, 'atr']
-
-        self.unsupported_keys.append('atr')
+        Returns:
+            StrategyResult: direction, confidence (0-100), weight
+        """
+        raise NotImplementedError
+    
+    def run(self) -> StrategyResult:
+        """Strategiyani ishga tushiradi va natijani qaytaradi"""
+        self.calculate_indicators()
+        result = self.get_confidence()
+        result.name = self.get_name()
+        result.indicators = self._get_indicators()
+        # Confidence ni 5-95% oralig'ida cheklash
+        result.confidence = max(5.0, min(95.0, result.confidence))
+        return result
+    
+    def _get_indicators(self) -> dict[str, Any]:
+        """Oxirgi qator indikatorlarini qaytaradi"""
+        last_row = self.df.iloc[-1].to_dict()
+        return {k: v for k, v in last_row.items() if k not in self.unsupported_keys}
+    
+    def get_name(self) -> str:
+        return self.__class__.__name__
+    
+    def _normalize_confidence(self, value: float, min_val: float, max_val: float) -> float:
+        """Qiymatni 0-100 oralig'iga normalizatsiya qiladi"""
+        if max_val == min_val:
+            return 50.0
+        normalized = ((value - min_val) / (max_val - min_val)) * 100
+        return max(0.0, min(100.0, normalized))
 
 
 class TrendFollowStrategy(BaseStrategy):
-    def calculate_indicators(self):
+    """EMA + RSI + ADX asosida trend following"""
+    
+    weight = 1.2  # Trend strategiyasi uchun yuqoriroq og'irlik
+    
+    def calculate_indicators(self) -> None:
         self.df['ema21'] = EMAIndicator(self.df['close'], window=21).ema_indicator()
         self.df['ema100'] = EMAIndicator(self.df['close'], window=100).ema_indicator()
         self.df['rsi'] = RSIIndicator(self.df['close'], window=14).rsi()
-        self.df['adx'] = ADXIndicator(high=self.df['high'], low=self.df['low'], close=self.df['close'], window=14).adx()
+        self.df['adx'] = ADXIndicator(
+            high=self.df['high'], 
+            low=self.df['low'], 
+            close=self.df['close'], 
+            window=14
+        ).adx()
 
-    def generate_signals(self):
-        self.df['ema21_prev'] = self.df['ema21'].shift(1)
-        self.df['ema100_prev'] = self.df['ema100'].shift(1)
-
-        self.df['bullish_crossover'] = (self.df['ema21_prev'] <= self.df['ema100_prev']) & (self.df['ema21'] > self.df['ema100'])
-        self.df['bearish_crossover'] = (self.df['ema21_prev'] >= self.df['ema100_prev']) & (self.df['ema21'] < self.df['ema100'])
-
-        self.df['below_ema21'] = self.df['close'].shift(1) < self.df['ema21'].shift(1)
-        self.df['above_ema21'] = self.df['close'] > self.df['ema21']
-        self.df['pullback'] = self.df['below_ema21'] & self.df['above_ema21']
-
-        self.df['above_ema21_prev'] = self.df['close'].shift(1) > self.df['ema21'].shift(1)
-        self.df['below_ema21_now'] = self.df['close'] < self.df['ema21']
-        self.df['rally'] = self.df['above_ema21_prev'] & self.df['below_ema21_now']
-
-        self.df['long_signal'] = (
-            (self.df['ema21'] > self.df['ema100']) &
-            (self.df['close'] > self.df['ema21']) &
-            (self.df['bullish_crossover'] | self.df['pullback']) &
-            (self.df['adx'] > 25) &
-            (self.df['rsi'].between(50, 70))
+    def get_confidence(self) -> StrategyResult:
+        last = self.df.iloc[-1]
+        
+        ema21 = last['ema21']
+        ema100 = last['ema100']
+        rsi = last['rsi']
+        adx = last['adx']
+        close = last['close']
+        
+        # Trend yo'nalishi va kuchi
+        ema_diff_pct = ((ema21 - ema100) / ema100) * 100
+        
+        # ADX kuchi (25+ kuchli trend)
+        adx_score = min(100, (adx / 50) * 100) if adx > 20 else 0
+        
+        # RSI score
+        if rsi > 50:
+            rsi_score = min(100, ((rsi - 50) / 30) * 100)  # 50-80 oralig'i long uchun
+            if rsi > 70:
+                rsi_score *= 0.7  # Overbought
+        else:
+            rsi_score = min(100, ((50 - rsi) / 30) * 100)  # 20-50 oralig'i short uchun
+            if rsi < 30:
+                rsi_score *= 0.7  # Oversold
+        
+        # Price position relative to EMAs
+        above_ema21 = close > ema21
+        above_ema100 = close > ema100
+        
+        # Trend score
+        trend_score = min(100, abs(ema_diff_pct) * 20)
+        
+        if ema21 > ema100 and above_ema21 and above_ema100 and adx > 25:
+            # Kuchli LONG signal - kuchli trend
+            confidence = (trend_score * 0.4 + adx_score * 0.3 + rsi_score * 0.3)
+            direction = "LONG"
+        elif ema21 < ema100 and not above_ema21 and not above_ema100 and adx > 25:
+            # Kuchli SHORT signal - kuchli trend
+            confidence = (trend_score * 0.4 + adx_score * 0.3 + rsi_score * 0.3)
+            direction = "SHORT"
+        elif ema21 > ema100 and above_ema21 and above_ema100:
+            # O'rta LONG (trend bor, ADX past)
+            confidence = (trend_score * 0.3 + adx_score * 0.2 + rsi_score * 0.2)
+            direction = "LONG"
+        elif ema21 < ema100 and not above_ema21 and not above_ema100:
+            # O'rta SHORT
+            confidence = (trend_score * 0.3 + adx_score * 0.2 + rsi_score * 0.2)
+            direction = "SHORT"
+        elif adx < 20:
+            # Trend yo'q - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
+        elif ema21 > ema100:
+            # Zaif LONG (EMA uptrend, lekin price alignment yo'q)
+            confidence = (trend_score * 0.15 + adx_score * 0.1)
+            direction = "LONG"
+        elif ema21 < ema100:
+            # Zaif SHORT
+            confidence = (trend_score * 0.15 + adx_score * 0.1)
+            direction = "SHORT"
+        else:
+            # Flat market - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
+        
+        return StrategyResult(
+            direction=direction,
+            confidence=confidence,
+            weight=self.weight
         )
 
-        self.df['short_signal'] = (
-            (self.df['ema21'] < self.df['ema100']) &
-            (self.df['close'] < self.df['ema21']) &
-            (self.df['bearish_crossover'] | self.df['rally']) &
-            (self.df['adx'] > 25) &
-            (self.df['rsi'].between(30, 50))
-        )
-
-        self.unsupported_keys += ['bullish_crossover', 'bearish_crossover', 'ema21_prev', 'ema100_prev', 'below_ema21', 'above_ema21', 'above_ema21_prev', 'below_ema21_now', 'rally', 'pullback']
-
-        return self.df
-    
 
 class MACDCrossoverStrategy(BaseStrategy):
-    def __init__(self, data, symbol):
-        super().__init__(data, symbol)
-        self.stop_mul = 2
-        self.profit_muls = [2, 4, 6]
-    def calculate_indicators(self):
+    """MACD crossover + trend filter"""
+    
+    weight = 1.0
+    
+    def calculate_indicators(self) -> None:
         macd = MACD(self.df['close'])
         self.df['macd'] = macd.macd()
         self.df['macd_signal'] = macd.macd_signal()
+        self.df['macd_hist'] = macd.macd_diff()
         self.df['ema20'] = EMAIndicator(self.df['close'], window=20).ema_indicator()
         self.df['ema200'] = EMAIndicator(self.df['close'], window=200).ema_indicator()
-        self.df['adx'] = ADXIndicator(high=self.df['high'], low=self.df['low'], close=self.df['close'], window=14).adx()
+        self.df['adx'] = ADXIndicator(
+            high=self.df['high'], 
+            low=self.df['low'], 
+            close=self.df['close'], 
+            window=14
+        ).adx()
     
-    def generate_signals(self):
-        short_trend = (
-            (self.df['close'] < self.df['ema20']) &
-            (self.df['ema20'] < self.df['ema200']) &
-            (self.df['adx'] > 25)
-        )
-        long_trend = (
-            (self.df['close'] > self.df['ema20']) &
-            (self.df['ema20'] > self.df['ema200']) &
-            (self.df['adx'] > 25)
+    def get_confidence(self) -> StrategyResult:
+        last = self.df.iloc[-1]
+        prev = self.df.iloc[-2]
+        
+        macd = last['macd']
+        macd_signal = last['macd_signal']
+        macd_hist = last['macd_hist']
+        prev_macd = prev['macd']
+        prev_macd_signal = prev['macd_signal']
+        
+        ema20 = last['ema20']
+        ema200 = last['ema200']
+        close = last['close']
+        adx = last['adx']
+        
+        # MACD histogram kuchi
+        hist_std = self.df['macd_hist'].rolling(50).std().iloc[-1]
+        if hist_std > 0:
+            hist_strength = min(100, (abs(macd_hist) / (hist_std * 2)) * 100)
+        else:
+            hist_strength = 50
+        
+        # Crossover tekshirish
+        bullish_cross = prev_macd <= prev_macd_signal and macd > macd_signal
+        bearish_cross = prev_macd >= prev_macd_signal and macd < macd_signal
+        
+        # Trend alignment
+        long_trend = close > ema20 > ema200
+        short_trend = close < ema20 < ema200
+        
+        # ADX filter
+        adx_multiplier = min(1.0, adx / 25) if adx > 20 else 0.5
+        
+        # MACD histogram kuchsiz bo'lsa - NEUTRAL
+        if hist_strength < 20 and not bullish_cross and not bearish_cross:
+            return StrategyResult(
+                direction="NEUTRAL",
+                confidence=0.0,
+                weight=self.weight
+            )
+        
+        if bullish_cross and long_trend:
+            confidence = hist_strength * adx_multiplier
+            direction = "LONG"
+        elif bearish_cross and short_trend:
+            confidence = hist_strength * adx_multiplier
+            direction = "SHORT"
+        elif macd > macd_signal and long_trend:
+            # Mavjud LONG momentum
+            confidence = hist_strength * 0.6 * adx_multiplier
+            direction = "LONG"
+        elif macd < macd_signal and short_trend:
+            # Mavjud SHORT momentum
+            confidence = hist_strength * 0.6 * adx_multiplier
+            direction = "SHORT"
+        elif adx < 20:
+            # Trend yo'q - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
+        elif macd > macd_signal:
+            # MACD bullish, lekin trend alignment yo'q
+            confidence = hist_strength * 0.25 * adx_multiplier
+            direction = "LONG"
+        elif macd < macd_signal:
+            # MACD bearish, lekin trend alignment yo'q
+            confidence = hist_strength * 0.25 * adx_multiplier
+            direction = "SHORT"
+        else:
+            # MACD = signal - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
+        
+        return StrategyResult(
+            direction=direction,
+            confidence=confidence,
+            weight=self.weight
         )
 
-        long_macd_cross = (
-            (self.df['macd'] > self.df['macd_signal']) &
-            (self.df['macd'].shift(1) <= self.df['macd_signal'].shift(1))
-        )
-        short_macd_cross = (
-            (self.df['macd'] < self.df['macd_signal']) &
-            (self.df['macd'].shift(1) >= self.df['macd_signal'].shift(1))
-        )
-
-        self.df['long_signal'] = long_macd_cross & long_trend
-        self.df['short_signal'] = short_macd_cross & short_trend
-
-        return self.df
- 
 
 class BollingerBandSqueezeStrategy(BaseStrategy):
-    def __init__(self, data, symbol):
-        super().__init__(data, symbol)
-        self.stop_mul = 2
-        self.profit_muls = [2, 3, 4.5]
-    def calculate_indicators(self):
-        bollinger_band = BollingerBands(close=self.df['close'])
-        self.df['bollinger_upper'] = bollinger_band.bollinger_hband()
-        self.df['bollinger_lower'] = bollinger_band.bollinger_lband()
+    """Bollinger Bands breakout"""
+    
+    weight = 0.8
+    
+    def calculate_indicators(self) -> None:
+        bb = BollingerBands(close=self.df['close'])
+        self.df['bb_upper'] = bb.bollinger_hband()
+        self.df['bb_lower'] = bb.bollinger_lband()
+        self.df['bb_mid'] = bb.bollinger_mavg()
+        self.df['bb_width'] = bb.bollinger_wband()
+        self.df['bb_pband'] = bb.bollinger_pband()  # 0-1 oralig'ida pozitsiya
 
-    def generate_signals(self):
-        self.df['long_signal'] = (self.df['bollinger_upper'] < self.df['close']) & (self.df['bollinger_upper'].shift() >= self.df['close'])
-        self.df['short_signal'] = (self.df['bollinger_upper'] > self.df['close']) & (self.df['bollinger_upper'].shift() <= self.df['close'])
+    def get_confidence(self) -> StrategyResult:
+        last = self.df.iloc[-1]
+        prev = self.df.iloc[-2]
         
-        return self.df
+        close = last['close']
+        bb_upper = last['bb_upper']
+        bb_lower = last['bb_lower']
+        bb_pband = last['bb_pband']
+        bb_width = last['bb_width']
+        
+        prev_close = prev['close']
+        prev_bb_upper = prev['bb_upper']
+        prev_bb_lower = prev['bb_lower']
+        
+        # Breakout kuchini hisoblash
+        avg_width = self.df['bb_width'].rolling(20).mean().iloc[-1]
+        width_ratio = bb_width / avg_width if avg_width > 0 else 1
+        
+        # Yuqoriga breakout
+        if close > bb_upper and prev_close <= prev_bb_upper:
+            # Breakout kuchi
+            breakout_strength = ((close - bb_upper) / bb_upper) * 1000
+            confidence = min(100, breakout_strength * 50) * min(1.5, width_ratio)
+            direction = "LONG"
+        # Pastga breakout
+        elif close < bb_lower and prev_close >= prev_bb_lower:
+            breakout_strength = ((bb_lower - close) / bb_lower) * 1000
+            confidence = min(100, breakout_strength * 50) * min(1.5, width_ratio)
+            direction = "SHORT"
+        # Aniq zonalarda - past confidence bilan
+        elif bb_pband > 0.85:
+            confidence = (bb_pband - 0.85) * 150  # 0-22 oralig'ida
+            direction = "LONG"
+        elif bb_pband < 0.15:
+            confidence = (0.15 - bb_pband) * 150
+            direction = "SHORT"
+        # O'rta zonada - NEUTRAL
+        else:
+            # Band ichida, aniq pozitsiya yo'q
+            direction = "NEUTRAL"
+            confidence = 0.0
+        
+        return StrategyResult(
+            direction=direction,
+            confidence=confidence,
+            weight=self.weight
+        )
 
 
 class StochasticOscillatorStrategy(BaseStrategy):
-    def __init__(self, data, symbol):
-        super().__init__(data, symbol)
-        self.stop_mul = 1
-        self.profit_muls = [1, 2, 4]
-    def calculate_indicators(self):
-        stoch = StochasticOscillator(high=self.df['high'], low=self.df['low'], close=self.df['close'])
+    """Stochastic oversold/overbought + crossover"""
+    
+    weight = 0.9
+    
+    def calculate_indicators(self) -> None:
+        stoch = StochasticOscillator(
+            high=self.df['high'], 
+            low=self.df['low'], 
+            close=self.df['close']
+        )
         self.df['stoch_k'] = stoch.stoch()
         self.df['stoch_d'] = stoch.stoch_signal()
 
-    def generate_signals(self):
-        self.df['long_signal'] = (self.df['stoch_k'] < 20) & (self.df['stoch_k'] > self.df['stoch_d']) & (self.df['stoch_k'].shift(1) <= self.df['stoch_d'].shift(1))
-        self.df['short_signal'] = (self.df['stoch_k'] > 80) & (self.df['stoch_k'] < self.df['stoch_d']) & (self.df['stoch_k'].shift(1) >= self.df['stoch_d'].shift(1))
+    def get_confidence(self) -> StrategyResult:
+        last = self.df.iloc[-1]
+        prev = self.df.iloc[-2]
+        
+        k = last['stoch_k']
+        d = last['stoch_d']
+        prev_k = prev['stoch_k']
+        prev_d = prev['stoch_d']
+        
+        # Crossover tekshirish
+        bullish_cross = prev_k <= prev_d and k > d
+        bearish_cross = prev_k >= prev_d and k < d
+        
+        # Oversold zone (k < 20) + bullish crossover
+        if k < 20 and bullish_cross:
+            # Kuchli long signal
+            confidence = 75 + (20 - k)  # 75-95 oralig'ida
+            direction = "LONG"
+        # Overbought zone (k > 80) + bearish crossover
+        elif k > 80 and bearish_cross:
+            confidence = 75 + (k - 80)  # 75-95 oralig'ida
+            direction = "SHORT"
+        # Oversold zone bilan momentum
+        elif k < 25 and k > d:
+            confidence = 45 + (25 - k) * 2  # 45-95 oralig'ida
+            direction = "LONG"
+        # Overbought zone bilan momentum
+        elif k > 75 and k < d:
+            confidence = 45 + (k - 75) * 2  # 45-95 oralig'ida
+            direction = "SHORT"
+        # O'rta zona (25-75) - NEUTRAL
+        else:
+            # Na overbought, na oversold - signal yo'q
+            direction = "NEUTRAL"
+            confidence = 0.0
+        
+        return StrategyResult(
+            direction=direction,
+            confidence=min(100, confidence),
+            weight=self.weight
+        )
 
-        return self.df
-    
 
 class SMACrossoverStrategy(BaseStrategy):
-    def calculate_indicators(self):
+    """Golden/Death cross - SMA50 vs SMA200"""
+    
+    weight = 1.1
+    
+    def calculate_indicators(self) -> None:
         self.df['sma50'] = SMAIndicator(close=self.df['close'], window=50).sma_indicator()
         self.df['sma200'] = SMAIndicator(close=self.df['close'], window=200).sma_indicator()
 
-    def generate_signals(self):
-        self.df['long_signal'] = (self.df['sma50'] > self.df['sma200']) & (self.df['sma50'].shift(1) <= self.df['sma200'].shift(1))
-        self.df['short_signal'] = (self.df['sma50'] < self.df['sma200']) & (self.df['sma50'].shift(1) >= self.df['sma200'].shift(1))
+    def get_confidence(self) -> StrategyResult:
+        last = self.df.iloc[-1]
+        prev = self.df.iloc[-2]
+        
+        sma50 = last['sma50']
+        sma200 = last['sma200']
+        prev_sma50 = prev['sma50']
+        prev_sma200 = prev['sma200']
+        close = last['close']
+        
+        # SMA farqi foizda
+        sma_diff_pct = ((sma50 - sma200) / sma200) * 100
+        
+        # Golden cross (SMA50 SMA200 ni yuqoriga kesib o'tdi)
+        golden_cross = prev_sma50 <= prev_sma200 and sma50 > sma200
+        # Death cross (SMA50 SMA200 ni pastga kesib o'tdi)
+        death_cross = prev_sma50 >= prev_sma200 and sma50 < sma200
+        
+        if golden_cross:
+            confidence = 80  # Cross bo'lganda yuqori ishonch
+            direction = "LONG"
+        elif death_cross:
+            confidence = 80
+            direction = "SHORT"
+        elif sma50 > sma200 and close > sma50 and abs(sma_diff_pct) > 1:
+            # Aniq uptrend davom etmoqda (kamida 1% spread)
+            confidence = min(65, 35 + abs(sma_diff_pct) * 8)
+            direction = "LONG"
+        elif sma50 < sma200 and close < sma50 and abs(sma_diff_pct) > 1:
+            # Aniq downtrend davom etmoqda
+            confidence = min(65, 35 + abs(sma_diff_pct) * 8)
+            direction = "SHORT"
+        elif abs(sma_diff_pct) < 0.5:
+            # SMAlar juda yaqin - trend yo'q, NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
+        elif sma50 > sma200:
+            # Uptrend, lekin kuchsiz yoki price alignment yo'q
+            confidence = min(30, 10 + abs(sma_diff_pct) * 4)
+            direction = "LONG"
+        elif sma50 < sma200:
+            # Downtrend, lekin kuchsiz
+            confidence = min(30, 10 + abs(sma_diff_pct) * 4)
+            direction = "SHORT"
+        else:
+            # SMA50 = SMA200 - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
+        
+        return StrategyResult(
+            direction=direction,
+            confidence=confidence,
+            weight=self.weight
+        )
 
-        return self.df
-    
 
 class WilliamsFractalsStrategy(BaseStrategy):
-    def calculate_indicators(self):
+    """Williams Fractals + EMA trend filter"""
+    
+    weight = 0.9
+    
+    def calculate_indicators(self) -> None:
         wf = WilliamsFractals(high=self.df['high'], low=self.df['low'], window=2)
-        self.df['fractal_down'] = wf.bearish_williams_fractals()
         self.df['fractal_up'] = wf.bullish_williams_fractals()
+        self.df['fractal_down'] = wf.bearish_williams_fractals()
         self.df['ema20'] = EMAIndicator(self.df['close'], window=20).ema_indicator()
         self.df['ema50'] = EMAIndicator(self.df['close'], window=50).ema_indicator()
         self.df['ema100'] = EMAIndicator(self.df['close'], window=100).ema_indicator()
 
-        self.unsupported_keys.append('fractal_down')
-        self.unsupported_keys.append('fractal_up')
-
-    def generate_signals(self):
+    def get_confidence(self) -> StrategyResult:
+        last = self.df.iloc[-1]
+        # Fractal 2 ta oldingi shamda ko'rinadi
+        fractal_row = self.df.iloc[-3] if len(self.df) > 3 else last
         
-        self.df['long_signal'] = (
-            (self.df["low"] > self.df["ema100"]) &
-            (self.df["ema20"] > self.df["ema50"]) &
-            (self.df["ema50"] > self.df["ema100"]) &
-            (self.df["fractal_up"].shift(2))  # 2 ta oldingi shamda fractal up  
+        close = last['close']
+        low = last['low']
+        high = last['high']
+        ema20 = last['ema20']
+        ema50 = last['ema50']
+        ema100 = last['ema100']
+        
+        fractal_up = fractal_row['fractal_up']
+        fractal_down = fractal_row['fractal_down']
+        
+        # EMA alignment
+        bullish_ema = ema20 > ema50 > ema100
+        bearish_ema = ema20 < ema50 < ema100
+        
+        # EMA alignment kuchi
+        ema_spread = abs((ema20 - ema100) / ema100) * 100
+        ema_strength = min(100, ema_spread * 20)
+        
+        if fractal_up and bullish_ema and low > ema100:
+            confidence = 60 + ema_strength * 0.35
+            direction = "LONG"
+        elif fractal_down and bearish_ema and high < ema100:
+            confidence = 60 + ema_strength * 0.35
+            direction = "SHORT"
+        elif bullish_ema and close > ema20 and ema_spread > 0.5:
+            # Kuchli bullish alignment
+            confidence = 35 + ema_strength * 0.25
+            direction = "LONG"
+        elif bearish_ema and close < ema20 and ema_spread > 0.5:
+            # Kuchli bearish alignment
+            confidence = 35 + ema_strength * 0.25
+            direction = "SHORT"
+        elif ema_spread < 0.3:
+            # EMAlar juda yaqin - trend yo'q, NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
+        elif bullish_ema:
+            # Bullish EMA, lekin zaif signal
+            confidence = 15 + ema_strength * 0.1
+            direction = "LONG"
+        elif bearish_ema:
+            # Bearish EMA, lekin zaif signal
+            confidence = 15 + ema_strength * 0.1
+            direction = "SHORT"
+        else:
+            # EMA alignment yo'q - NEUTRAL
+            direction = "NEUTRAL"
+            confidence = 0.0
+        
+        return StrategyResult(
+            direction=direction,
+            confidence=min(100, confidence),
+            weight=self.weight
         )
-
-        self.df['short_signal'] = (
-            (self.df["high"] < self.df["ema100"]) &
-            (self.df["ema20"] < self.df["ema50"]) &
-            (self.df["ema50"] < self.df["ema100"]) &
-            (self.df["fractal_down"].shift(2))  # 2 ta oldingi shamda fractal down
-        )
-
-        return self.df
-    
-    def calculate_stop_loss_and_take_profit(self):
-        long_idx = self.df['long_signal']
-        short_idx = self.df['short_signal']
-
-        # Long uchun
-        con_1 = long_idx & (self.df['low'] < self.df['ema20']) & (self.df['low'] > self.df['ema50'])
-        self.df.loc[con_1, 'stop_loss'] = self.df.loc[con_1, 'ema50'] * 0.98
-        risk = self.df.loc[con_1, 'close'] - self.df.loc[con_1, 'stop_loss']
-        self.df.loc[con_1, 'take_profit_1'] = self.df.loc[con_1, 'close'] + 1.5 * risk
-        self.df.loc[con_1, 'take_profit_2'] = self.df.loc[con_1, 'close'] + 2 * risk
-        self.df.loc[con_1, 'take_profit_3'] = self.df.loc[con_1, 'close'] + 3 * risk
-
-        con_2 = long_idx & (self.df['low'] < self.df['ema50']) & (self.df['low'] > self.df['ema100'])
-        self.df.loc[con_2, 'stop_loss'] = self.df.loc[con_2, 'ema100'] * 0.98
-        risk = self.df.loc[con_2, 'close'] - self.df.loc[con_2, 'stop_loss']
-        self.df.loc[con_2, 'take_profit_1'] = self.df.loc[con_2, 'close'] + 1.5 * risk
-        self.df.loc[con_2, 'take_profit_2'] = self.df.loc[con_2, 'close'] + 2 * risk
-        self.df.loc[con_2, 'take_profit_3'] = self.df.loc[con_2, 'close'] + 3 * risk
-
-        # Short  uchun
-        con_3 = short_idx & (self.df['high'] > self.df['ema20']) & (self.df['high'] < self.df['ema50'])
-        self.df.loc[con_3, 'stop_loss'] = self.df.loc[con_3, 'ema50'] * 1.02
-        risk = self.df.loc[con_3, 'stop_loss'] - self.df.loc[con_3, 'close']
-        self.df.loc[con_3, 'take_profit_1'] = self.df.loc[con_3, 'close'] - 1.5 * risk
-        self.df.loc[con_3, 'take_profit_2'] = self.df.loc[con_3, 'close'] - 2 * risk
-        self.df.loc[con_3, 'take_profit_3'] = self.df.loc[con_3, 'close'] - 3 * risk
-
-        con_4 = short_idx & (self.df['high'] > self.df['ema50']) & (self.df['high'] < self.df['ema100'])
-        self.df.loc[con_4, 'stop_loss'] = self.df.loc[con_4, 'ema100'] * 1.02
-        risk = self.df.loc[con_4, 'stop_loss'] - self.df.loc[con_4, 'close']
-        self.df.loc[con_4, 'take_profit_1'] = self.df.loc[con_4, 'close'] - 1.5 * risk
-        self.df.loc[con_4, 'take_profit_2'] = self.df.loc[con_4, 'close'] - 2 * risk
-        self.df.loc[con_4, 'take_profit_3'] = self.df.loc[con_4, 'close'] - 3 * risk

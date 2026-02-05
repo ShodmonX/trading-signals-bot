@@ -1,6 +1,7 @@
-from sqlalchemy import select
+from sqlalchemy import select, and_
+from datetime import date
 
-from .models import User, Signal, Strategy, Crypto
+from .models import User, Signal, Strategy, Crypto, BacktestResult
 
 
 class UserCRUD():
@@ -158,6 +159,29 @@ class StrategyCRUD():
         result = await self.session.execute(stm)
         return result.scalars().first()
     
+    async def get_all(self, only_active: bool = True) -> list[Strategy]:
+        """Barcha strategiyalarni olish"""
+        if only_active:
+            stm = select(self.model).where(Strategy.is_active == True)
+        else:
+            stm = select(self.model)
+        result = await self.session.execute(stm)
+        return list(result.scalars().all())
+    
+    async def get_by_id(self, id: int):
+        stm = select(self.model).where(Strategy.id == id)
+        result = await self.session.execute(stm)
+        return result.scalars().first()
+    
+    async def update_status(self, code: str, is_active: bool):
+        """Strategiya statusini o'zgartirish"""
+        strategy = await self.get_by_code(code)
+        if strategy:
+            strategy.is_active = is_active
+            await self.session.commit()
+            await self.session.refresh(strategy)
+        return strategy
+    
 
 class CryptoCRUD():
     def __init__(self, session):
@@ -166,5 +190,102 @@ class CryptoCRUD():
 
     async def get_by_symbol(self, symbol: str):
         stm = select(self.model).where(Crypto.symbol == symbol)
+        result = await self.session.execute(stm)
+        return result.scalars().first()
+
+
+class BacktestResultCRUD():
+    """Backtest natijalarini saqlash va olish uchun CRUD"""
+    
+    def __init__(self, session):
+        self.session = session
+        self.model = BacktestResult
+    
+    async def find_existing(
+        self,
+        user_id: int,
+        symbol: str,
+        timeframe: str,
+        threshold: float,
+        start_date: date,
+        end_date: date,
+    ) -> BacktestResult | None:
+        """Mavjud backtest natijasini qidirish"""
+        stm = select(self.model).where(
+            and_(
+                BacktestResult.user_id == user_id,
+                BacktestResult.symbol == symbol,
+                BacktestResult.timeframe == timeframe,
+                BacktestResult.threshold == threshold,
+                BacktestResult.start_date == start_date,
+                BacktestResult.end_date == end_date,
+            )
+        )
+        result = await self.session.execute(stm)
+        return result.scalars().first()
+    
+    async def create(self, data: dict) -> BacktestResult:
+        """Yangi backtest natijasini saqlash"""
+        result = self.model(**data)
+        self.session.add(result)
+        try:
+            await self.session.commit()
+            await self.session.refresh(result)
+        except Exception as e:
+            await self.session.rollback()
+            raise e
+        return result
+    
+    async def update(self, result_id: int, data: dict) -> BacktestResult | None:
+        """Backtest natijasini yangilash"""
+        stm = select(self.model).where(BacktestResult.id == result_id)
+        result = await self.session.execute(stm)
+        backtest = result.scalars().first()
+        
+        if not backtest:
+            return None
+        
+        for key, value in data.items():
+            setattr(backtest, key, value)
+        
+        try:
+            await self.session.commit()
+            await self.session.refresh(backtest)
+        except Exception as e:
+            await self.session.rollback()
+            raise e
+        return backtest
+    
+    async def delete(self, result_id: int) -> bool:
+        """Backtest natijasini o'chirish"""
+        stm = select(self.model).where(BacktestResult.id == result_id)
+        result = await self.session.execute(stm)
+        backtest = result.scalars().first()
+        
+        if not backtest:
+            return False
+        
+        try:
+            await self.session.delete(backtest)
+            await self.session.commit()
+        except Exception as e:
+            await self.session.rollback()
+            raise e
+        return True
+    
+    async def get_by_user(self, user_id: int, limit: int = 10) -> list[BacktestResult]:
+        """Foydalanuvchining backtest natijalarini olish"""
+        stm = (
+            select(self.model)
+            .where(BacktestResult.user_id == user_id)
+            .order_by(BacktestResult.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stm)
+        return list(result.scalars().all())
+    
+    async def get_by_id(self, result_id: int) -> BacktestResult | None:
+        """ID bo'yicha backtest natijasini olish"""
+        stm = select(self.model).where(BacktestResult.id == result_id)
         result = await self.session.execute(stm)
         return result.scalars().first()

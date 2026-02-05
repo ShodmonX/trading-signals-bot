@@ -1,5 +1,11 @@
+"""
+DEPRECATED: Bu fayl endi ishlatilmaydi.
+Dinamik keyboard uchun app.services.strategy_registry.build_strategies_keyboard() dan foydalaning.
+"""
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+# Legacy static keyboard - faqat fallback uchun
 strategies = InlineKeyboardMarkup(inline_keyboard=[
     [
         InlineKeyboardButton(text='Trend Follow Strategy', callback_data='strategy:trendfollowstrategy')
