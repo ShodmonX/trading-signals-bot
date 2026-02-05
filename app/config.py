@@ -1,28 +1,8 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import PrivateAttr
-from typing import Type
 
 from functools import lru_cache
 
-from .strategies import (
-    BaseStrategy,
-    TrendFollowStrategy, 
-    MACDCrossoverStrategy, 
-    BollingerBandSqueezeStrategy, 
-    StochasticOscillatorStrategy, 
-    SMACrossoverStrategy, 
-    WilliamsFractalsStrategy
-)
-
-
-STRATEGIES = {
-    "trendfollowstrategy": TrendFollowStrategy, 
-    "macdcrossoverstrategy": MACDCrossoverStrategy,
-    "bollingerbandsqueezestrategy": BollingerBandSqueezeStrategy,
-    "stochasticoscillatorstrategy": StochasticOscillatorStrategy,
-    "smacrossoverstrategy": SMACrossoverStrategy, 
-    "williamsfractalsstrategy": WilliamsFractalsStrategy
-}
 
 DEFAULT_CHECK_TYPES = {
     'check_5m': True,
@@ -31,6 +11,11 @@ DEFAULT_CHECK_TYPES = {
     'check_1h': True,
     'check_4h': True,
 }
+
+# Signal Aggregator sozlamalari
+SIGNAL_THRESHOLD: float = 60.0  # Minimal ishonch darajasi (0-100)
+STOP_LOSS_MULTIPLIER: float = 1.5  # ATR multiplier for SL
+TAKE_PROFIT_MULTIPLIERS: list[float] = [1.5, 3.0, 4.5]  # ATR multipliers for TP
 
 
 class Settings(BaseSettings):
@@ -48,10 +33,6 @@ class Settings(BaseSettings):
         if not self.SYMBOLS:
             return []
         return list(self.SYMBOLS.split(","))
-    
-    @property
-    def strategies(self) -> dict[str, Type[BaseStrategy]]:
-        return STRATEGIES.copy()
     
     @property
     def check_types(self) -> dict[str, bool]:

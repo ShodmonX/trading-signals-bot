@@ -158,6 +158,29 @@ class StrategyCRUD():
         result = await self.session.execute(stm)
         return result.scalars().first()
     
+    async def get_all(self, only_active: bool = True) -> list[Strategy]:
+        """Barcha strategiyalarni olish"""
+        if only_active:
+            stm = select(self.model).where(Strategy.is_active == True)
+        else:
+            stm = select(self.model)
+        result = await self.session.execute(stm)
+        return list(result.scalars().all())
+    
+    async def get_by_id(self, id: int):
+        stm = select(self.model).where(Strategy.id == id)
+        result = await self.session.execute(stm)
+        return result.scalars().first()
+    
+    async def update_status(self, code: str, is_active: bool):
+        """Strategiya statusini o'zgartirish"""
+        strategy = await self.get_by_code(code)
+        if strategy:
+            strategy.is_active = is_active
+            await self.session.commit()
+            await self.session.refresh(strategy)
+        return strategy
+    
 
 class CryptoCRUD():
     def __init__(self, session):

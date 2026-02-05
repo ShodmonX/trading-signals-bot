@@ -47,9 +47,10 @@ class User(Base):
 class Strategy(Base):
     __tablename__ = 'strategies'
 
-    id:     Mapped[int] = mapped_column(primary_key=True)
-    name:   Mapped[str] = mapped_column(String, nullable=False)
-    code:   Mapped[str] = mapped_column(String, nullable=False)
+    id:         Mapped[int] = mapped_column(primary_key=True)
+    name:       Mapped[str] = mapped_column(String, nullable=False)
+    code:       Mapped[str] = mapped_column(String, nullable=False)
+    is_active:  Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("'true'"))
 
     signals = relationship("Signal", back_populates="strategy")
 
@@ -60,7 +61,7 @@ class Strategy(Base):
     )
 
     def __repr__(self):
-        return f"Strategy(id={self.id!r}, name={self.name!r}, code={self.code!r})"
+        return f"Strategy(id={self.id!r}, name={self.name!r}, code={self.code!r}, is_active={self.is_active!r})"
 
     def __str__(self):
         return f"Strategy(id={self.id!r}, name={self.name!r}, code={self.code!r})"
@@ -69,7 +70,8 @@ class Strategy(Base):
         return {
             "id": self.id,
             "name": self.name,
-            "code": self.code
+            "code": self.code,
+            "is_active": self.is_active
         }
 
 
