@@ -6,6 +6,7 @@ va DB dan dinamik ravishda strategiyalarni yuklaydi.
 """
 
 from typing import Type
+from dataclasses import dataclass
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.strategies import (
@@ -20,6 +21,15 @@ from app.strategies import (
 from app.db import LocalAsyncSession, StrategyCRUD
 from app.db.models import Strategy
 
+
+# Strategiya konfiguratsiyasi
+@dataclass
+class StrategyConfig:
+    code: str
+    name: str
+    cls: Type[BaseStrategy]
+    performance_weight: float = 1.0
+    is_active: bool = True
 
 # Strategiya kodi -> Python class mapping
 # Bu yerda yangi strategiya qo'shilganda faqat shu dict ni yangilash kerak
@@ -44,11 +54,36 @@ def get_all_strategy_classes() -> list[Type[BaseStrategy]]:
     return [cls for cls in STRATEGY_CLASS_MAP.values() if cls is not None]
 
 
+def get_fallback_strategy_configs() -> list[StrategyConfig]:
+    """DB bo'lmaganda fallback strategiya konfiguratsiyalari"""
+    configs: list[StrategyConfig] = []
+    for code, cls in STRATEGY_CLASS_MAP.items():
+        if cls is None:
+            continue
+        configs.append(
+            StrategyConfig(
+                code=code,
+                name=cls.__name__,
+                cls=cls,
+                performance_weight=1.0,
+                is_active=True,
+            )
+        )
+    return configs
+
+
 async def get_active_strategies() -> list[Strategy]:
     """DB dan faol strategiyalarni olish"""
     async with LocalAsyncSession() as session:
         crud = StrategyCRUD(session)
         return await crud.get_all(only_active=True)
+
+
+async def get_all_strategies() -> list[Strategy]:
+    """DB dan barcha strategiyalarni olish (faol/nochal)"""
+    async with LocalAsyncSession() as session:
+        crud = StrategyCRUD(session)
+        return await crud.get_all(only_active=False)
 
 
 async def get_active_strategy_classes() -> list[Type[BaseStrategy]]:
@@ -60,6 +95,44 @@ async def get_active_strategy_classes() -> list[Type[BaseStrategy]]:
         if cls is not None:
             classes.append(cls)
     return classes
+
+
+async def get_active_strategy_configs() -> list[StrategyConfig]:
+    """DB dan faol strategiyalar konfiguratsiyasini olish"""
+    strategies = await get_active_strategies()
+    configs: list[StrategyConfig] = []
+    for strategy in strategies:
+        cls = get_strategy_class(strategy.code)
+        if cls is not None:
+            configs.append(
+                StrategyConfig(
+                    code=strategy.code,
+                    name=strategy.name,
+                    cls=cls,
+                    performance_weight=strategy.performance_weight or 1.0,
+                    is_active=strategy.is_active,
+                )
+            )
+    return configs
+
+
+async def get_all_strategy_configs() -> list[StrategyConfig]:
+    """DB dan barcha strategiyalar konfiguratsiyasini olish"""
+    strategies = await get_all_strategies()
+    configs: list[StrategyConfig] = []
+    for strategy in strategies:
+        cls = get_strategy_class(strategy.code)
+        if cls is not None:
+            configs.append(
+                StrategyConfig(
+                    code=strategy.code,
+                    name=strategy.name,
+                    cls=cls,
+                    performance_weight=strategy.performance_weight or 1.0,
+                    is_active=strategy.is_active,
+                )
+            )
+    return configs
 
 
 async def build_strategies_keyboard() -> InlineKeyboardMarkup:

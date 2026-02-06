@@ -141,6 +141,64 @@ def generate_backtest_pdf(summary: BacktestSummary) -> io.BytesIO:
     ]))
     elements.append(tp_table)
     elements.append(Spacer(1, 10*mm))
+
+    # Strategy Performance
+    if summary.strategy_performance:
+        elements.append(Paragraph("🧩 STRATEGIYA PERFORMANCE", subtitle_style))
+
+        perf_data = [["Strategiya", "Signals", "WinRate", "Profit", "PF", "Weight"]]
+        for perf in summary.strategy_performance:
+            perf_data.append([
+                perf.name,
+                str(perf.total_signals),
+                f"{perf.win_rate:.1f}%",
+                f"{perf.total_profit_percent:.2f}%",
+                f"{perf.profit_factor:.2f}",
+                f"{perf.current_weight:.2f}->{perf.suggested_weight:.2f}",
+            ])
+
+        perf_table = Table(perf_data, colWidths=[90, 45, 55, 55, 40, 70])
+        perf_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.Color(0.2, 0.5, 0.4)),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(perf_table)
+        elements.append(Spacer(1, 10*mm))
+
+        # Weight breakdown
+        elements.append(Paragraph("⚙️ WEIGHT BREAKDOWN (DEBUG)", subtitle_style))
+        wb_data = [["Strategiya", "Base", "Perf", "Regime", "Stability", "Corr", "Actual"]]
+        for perf in summary.strategy_performance:
+            wb_data.append([
+                perf.name,
+                f"{perf.base_weight:.2f}",
+                f"{perf.perf_weight:.2f}",
+                f"{perf.regime_mult:.2f}",
+                f"{perf.stability_weight:.2f}",
+                f"{perf.corr_penalty:.2f}",
+                f"{perf.actual_weight:.2f}",
+            ])
+        wb_table = Table(wb_data, colWidths=[90, 40, 40, 45, 55, 45, 45])
+        wb_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.Color(0.3, 0.3, 0.3)),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(wb_table)
+        elements.append(Spacer(1, 10*mm))
     
     # All Trades Table
     if summary.trades:

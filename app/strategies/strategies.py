@@ -27,8 +27,8 @@ class BaseStrategy:
     def __init__(self, data: list, symbol: str):
         self.df = pd.DataFrame(data, columns=[
             "timestamp", "open", "high", "low", "close", "volume",
-            'close_time', 'quote_asset_volume', 'trades', 'taker_base_vol',
-            'taker_quote_vol', 'ignore'
+            "close_time", "quote_asset_volume", "trades", "taker_base_vol",
+            "taker_quote_vol", "ignore"
         ])
         self.df[['open', 'high', 'low', 'close', 'volume']] = self.df[['open', 'high', 'low', 'close', 'volume']].astype(float)
         self.symbol = symbol
@@ -291,21 +291,44 @@ class BollingerBandSqueezeStrategy(BaseStrategy):
         prev_bb_upper = prev['bb_upper']
         prev_bb_lower = prev['bb_lower']
         
-        # Breakout kuchini hisoblash
-        avg_width = self.df['bb_width'].rolling(20).mean().iloc[-1]
-        width_ratio = bb_width / avg_width if avg_width > 0 else 1
+        # Squeeze detection (rolling percentile)
+        width_series = self.df['bb_width']
+        squeeze_window = 100
+        squeeze_quantile = 0.20
+        squeeze_threshold = width_series.rolling(squeeze_window).quantile(squeeze_quantile).iloc[-1]
+        has_squeeze_info = not np.isnan(squeeze_threshold)
+        
+        if has_squeeze_info:
+            lookback = min(5, len(width_series) - 1)
+            recent_window = width_series.iloc[-(lookback + 1):-1] if lookback > 0 else width_series.iloc[0:0]
+            recent_squeeze = (recent_window <= squeeze_threshold).any() if len(recent_window) else False
+        else:
+            # Agar tarix yetarli bo'lmasa, squeeze filtrini qo'llamaymiz
+            recent_squeeze = True
+        
+        # Breakout kuchini hisoblash (inverse width ratio)
+        avg_width = width_series.rolling(20).mean().iloc[-1]
+        width_ratio = (avg_width / bb_width) if bb_width > 0 and avg_width > 0 else 1.0
         
         # Yuqoriga breakout
         if close > bb_upper and prev_close <= prev_bb_upper:
-            # Breakout kuchi
-            breakout_strength = ((close - bb_upper) / bb_upper) * 1000
-            confidence = min(100, breakout_strength * 50) * min(1.5, width_ratio)
-            direction = "LONG"
+            if recent_squeeze:
+                # Breakout kuchi (faqat squeeze'dan keyin)
+                breakout_strength = ((close - bb_upper) / bb_upper) * 1000
+                confidence = min(100, breakout_strength * 50) * min(1.5, width_ratio)
+                direction = "LONG"
+            else:
+                direction = "NEUTRAL"
+                confidence = 0.0
         # Pastga breakout
         elif close < bb_lower and prev_close >= prev_bb_lower:
-            breakout_strength = ((bb_lower - close) / bb_lower) * 1000
-            confidence = min(100, breakout_strength * 50) * min(1.5, width_ratio)
-            direction = "SHORT"
+            if recent_squeeze:
+                breakout_strength = ((bb_lower - close) / bb_lower) * 1000
+                confidence = min(100, breakout_strength * 50) * min(1.5, width_ratio)
+                direction = "SHORT"
+            else:
+                direction = "NEUTRAL"
+                confidence = 0.0
         # Aniq zonalarda - past confidence bilan
         elif bb_pband > 0.85:
             confidence = (bb_pband - 0.85) * 150  # 0-22 oralig'ida

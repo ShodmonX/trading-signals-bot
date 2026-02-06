@@ -11,8 +11,9 @@ from app.config import (
 from app.strategies import SignalAggregator, AggregatedSignal
 from app.services.strategy_registry import (
     get_strategy_class, 
-    get_active_strategy_classes,
-    get_all_strategy_classes
+    get_all_strategy_classes,
+    get_active_strategy_configs,
+    get_fallback_strategy_configs
 )
 
 
@@ -31,12 +32,15 @@ async def analyze_symbol_ensemble(
     Ensemble tizimi - barcha faol strategiyalarni birlashtiradi va 
     weighted confidence asosida signal qaytaradi.
     """
-    # DB dan faol strategiyalarni olish
-    strategy_classes = await get_active_strategy_classes()
+    # DB dan faol strategiyalarni olish (weight bilan)
+    strategy_configs = await get_active_strategy_configs()
     
-    if not strategy_classes:
+    if not strategy_configs:
         # Fallback - agar DB da strategiyalar bo'lmasa, barcha klasslarni ishlatish
-        strategy_classes = get_all_strategy_classes()
+        strategy_configs = get_fallback_strategy_configs()
+    
+    strategy_classes = [cfg.cls for cfg in strategy_configs]
+    strategy_weights = {cfg.cls.__name__: cfg.performance_weight for cfg in strategy_configs}
     
     # SignalAggregator yaratish
     aggregator = SignalAggregator(
@@ -45,7 +49,8 @@ async def analyze_symbol_ensemble(
         strategies=strategy_classes,
         threshold=threshold,
         stop_multiplier=STOP_LOSS_MULTIPLIER,
-        tp_multipliers=TAKE_PROFIT_MULTIPLIERS
+        tp_multipliers=TAKE_PROFIT_MULTIPLIERS,
+        strategy_weights=strategy_weights,
     )
     
     # Signalni olish
@@ -74,7 +79,8 @@ async def analyze_symbol_ensemble(
     # Strategiya ovozlari (consensus score bilan)
     result_text += f"📈 Long: <code>{signal.long_votes}/{total_strategies}</code> (score: {signal.weighted_long_confidence:.1f}%)\n"
     result_text += f"📉 Short: <code>{signal.short_votes}/{total_strategies}</code> (score: {signal.weighted_short_confidence:.1f}%)\n"
-    result_text += f"➖ Neutral: <code>{signal.neutral_votes}</code>\n\n"
+    result_text += f"➖ Neutral: <code>{signal.neutral_votes}</code>\n"
+    result_text += f"⚠️ Filtered (low conf): <code>{signal.filtered_votes}</code>\n\n"
     
     # Strategiya detallari
     result_text += "🔹 <b>Strategy Details:</b>\n"

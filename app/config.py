@@ -17,6 +17,9 @@ SIGNAL_THRESHOLD: float = 55.0  # Minimal ishonch darajasi (0-100) - default 55%
 STOP_LOSS_MULTIPLIER: float = 1.5  # ATR multiplier for SL
 TAKE_PROFIT_MULTIPLIERS: list[float] = [1.5, 3.0, 4.5]  # ATR multipliers for TP
 
+# Backtest data cache (oylik CSV)
+DATA_CACHE_DIR: str = "data"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", from_attributes=True)

@@ -6,10 +6,39 @@ va yakuniy signal hamda SL/TP ni hisoblaydi.
 
 from typing import Literal
 from dataclasses import dataclass, field
+from math import ceil
 import pandas as pd
 from ta.volatility import AverageTrueRange
+from ta.trend import ADXIndicator
 
 from .strategies import StrategyResult, BaseStrategy
+
+
+# Aggregator defaults (false signalni kamaytirish uchun)
+MIN_VOTE_CONFIDENCE_DEFAULT = 30.0  # Vote hisoblanishi uchun minimal confidence
+MIN_VOTE_RATIO_DEFAULT = 0.66  # Total strategiyalardan talab qilinadigan ulush
+
+# Regime filter sozlamalari (ADX asosida)
+ADX_TREND_THRESHOLD = 25.0
+ADX_RANGE_THRESHOLD = 20.0
+TREND_STRATEGY_NAMES = {
+    "TrendFollowStrategy",
+    "MACDCrossoverStrategy",
+    "SMACrossoverStrategy",
+    "WilliamsFractalsStrategy",
+}
+RANGE_STRATEGY_NAMES = {
+    "BollingerBandSqueezeStrategy",
+    "StochasticOscillatorStrategy",
+}
+TREND_BOOST = 1.15
+TREND_DAMPEN = 0.6
+RANGE_BOOST = 1.1
+RANGE_DAMPEN = 0.5
+
+# Actual weight clamp
+MIN_ACTUAL_WEIGHT = 0.1
+MAX_ACTUAL_WEIGHT = 3.0
 
 
 @dataclass
@@ -28,6 +57,9 @@ class AggregatedSignal:
     long_votes: int = 0
     short_votes: int = 0
     neutral_votes: int = 0
+    filtered_votes: int = 0
+    long_weight_sum: float = 0.0
+    short_weight_sum: float = 0.0
     weighted_long_confidence: float = 0.0
     weighted_short_confidence: float = 0.0
     
@@ -44,6 +76,9 @@ class AggregatedSignal:
             "long_votes": self.long_votes,
             "short_votes": self.short_votes,
             "neutral_votes": self.neutral_votes,
+            "filtered_votes": self.filtered_votes,
+            "long_weight_sum": round(self.long_weight_sum, 4),
+            "short_weight_sum": round(self.short_weight_sum, 4),
             "weighted_long_confidence": round(self.weighted_long_confidence, 2),
             "weighted_short_confidence": round(self.weighted_short_confidence, 2),
         }
@@ -60,6 +95,8 @@ class SignalAggregator:
         threshold: Minimal ishonch darajasi (default: 60)
         stop_multiplier: ATR asosida SL multiplier (default: 1.5)
         tp_multipliers: ATR asosida TP multiplierlar (default: [1.5, 3, 4.5])
+        min_vote_confidence: Vote hisoblanishi uchun minimal confidence (default: 30)
+        min_vote_ratio: Total strategiyalardan min vote ulushi (default: 0.66)
     """
     
     def __init__(
@@ -69,7 +106,12 @@ class SignalAggregator:
         strategies: list[type[BaseStrategy]],
         threshold: float = 60.0,
         stop_multiplier: float = 1.5,
-        tp_multipliers: list[float] | None = None
+        tp_multipliers: list[float] | None = None,
+        min_vote_confidence: float = MIN_VOTE_CONFIDENCE_DEFAULT,
+        min_vote_ratio: float = MIN_VOTE_RATIO_DEFAULT,
+        strategy_weights: dict[str, float] | None = None,
+        stability_weights: dict[str, float] | None = None,
+        correlation_penalties: dict[str, float] | None = None,
     ):
         self.data = data
         self.symbol = symbol
@@ -77,6 +119,11 @@ class SignalAggregator:
         self.threshold = threshold
         self.stop_multiplier = stop_multiplier
         self.tp_multipliers = tp_multipliers or [1.5, 3.0, 4.5]
+        self.min_vote_confidence = max(0.0, min(100.0, min_vote_confidence))
+        self.min_vote_ratio = max(0.0, min(1.0, min_vote_ratio))
+        self.strategy_weights = strategy_weights or {}
+        self.stability_weights = stability_weights or {}
+        self.correlation_penalties = correlation_penalties or {}
         
         # DataFrame yaratish (ATR uchun)
         self.df = pd.DataFrame(data, columns=[
@@ -86,6 +133,49 @@ class SignalAggregator:
         ])
         self.df[['open', 'high', 'low', 'close', 'volume']] = \
             self.df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+        self._adx: float | None = None
+
+    def _get_adx(self) -> float:
+        """Regime filter uchun ADX ni hisoblab cache qiladi"""
+        if self._adx is None:
+            if len(self.df) < 14:
+                self._adx = 0.0
+            else:
+                adx_indicator = ADXIndicator(
+                    high=self.df['high'],
+                    low=self.df['low'],
+                    close=self.df['close'],
+                    window=14
+                )
+                adx_value = float(adx_indicator.adx().iloc[-1])
+                self._adx = 0.0 if pd.isna(adx_value) else adx_value
+        return self._adx
+
+    def _get_regime_multiplier(self, strategy_name: str) -> float:
+        """ADX asosida trend/range strategiyalariga multiplier qaytaradi"""
+        adx = self._get_adx()
+        multiplier = 1.0
+
+        if adx >= ADX_TREND_THRESHOLD:
+            if strategy_name in TREND_STRATEGY_NAMES:
+                multiplier = TREND_BOOST
+            elif strategy_name in RANGE_STRATEGY_NAMES:
+                multiplier = TREND_DAMPEN
+        elif adx <= ADX_RANGE_THRESHOLD:
+            if strategy_name in RANGE_STRATEGY_NAMES:
+                multiplier = RANGE_BOOST
+            elif strategy_name in TREND_STRATEGY_NAMES:
+                multiplier = RANGE_DAMPEN
+
+        return multiplier
+
+    def _get_stability_multiplier(self, strategy_name: str) -> float:
+        """Stability weight (default 1.0)"""
+        return self.stability_weights.get(strategy_name, 1.0)
+
+    def _get_correlation_penalty(self, strategy_name: str) -> float:
+        """Correlation penalty (default 1.0)"""
+        return self.correlation_penalties.get(strategy_name, 1.0)
     
     def run_all_strategies(self) -> list[StrategyResult]:
         """Barcha strategiyalarni ishga tushiradi"""
@@ -124,23 +214,47 @@ class SignalAggregator:
         long_votes = 0
         short_votes = 0
         neutral_votes = 0
+        filtered_votes = 0
         
-        long_confidences: list[float] = []
-        short_confidences: list[float] = []
+        long_confidence_sum = 0.0
+        short_confidence_sum = 0.0
+        long_weight_sum = 0.0
+        short_weight_sum = 0.0
         
         for result in results:
+            name = result.name or ""
+            perf_weight = self.strategy_weights.get(name, 1.0)
+            regime_mult = self._get_regime_multiplier(name)
+            stability_mult = self._get_stability_multiplier(name)
+            corr_penalty = self._get_correlation_penalty(name)
+            actual_weight = (
+                result.weight
+                * perf_weight
+                * regime_mult
+                * stability_mult
+                * corr_penalty
+            )
+            actual_weight = max(MIN_ACTUAL_WEIGHT, min(MAX_ACTUAL_WEIGHT, actual_weight))
             if result.direction == "LONG":
-                long_votes += 1
-                long_confidences.append(result.confidence)
+                if result.confidence >= self.min_vote_confidence:
+                    long_votes += 1
+                    long_confidence_sum += result.confidence * actual_weight
+                    long_weight_sum += actual_weight
+                else:
+                    filtered_votes += 1
             elif result.direction == "SHORT":
-                short_votes += 1
-                short_confidences.append(result.confidence)
+                if result.confidence >= self.min_vote_confidence:
+                    short_votes += 1
+                    short_confidence_sum += result.confidence * actual_weight
+                    short_weight_sum += actual_weight
+                else:
+                    filtered_votes += 1
             else:
                 neutral_votes += 1
         
         # O'rtacha confidence hisoblash
-        avg_long_confidence = sum(long_confidences) / len(long_confidences) if long_confidences else 0.0
-        avg_short_confidence = sum(short_confidences) / len(short_confidences) if short_confidences else 0.0
+        avg_long_confidence = (long_confidence_sum / long_weight_sum) if long_weight_sum > 0 else 0.0
+        avg_short_confidence = (short_confidence_sum / short_weight_sum) if short_weight_sum > 0 else 0.0
         
         # Total votes
         total_strategies = len(results)
@@ -148,18 +262,17 @@ class SignalAggregator:
         # Yakuniy yo'nalishni aniqlash
         entry_price = float(self.df['close'].iloc[-1])
         
-        # Minimum ovoz soni - oddiy ko'pchilik (50%+1)
-        # 6 strategiya uchun min 4 ta, chunki NEUTRAL lar ham hisobga olinadi
-        active_strategies = long_votes + short_votes  # NEUTRAL larni hisobga olmaymiz
-        min_votes = max(3, (active_strategies // 2) + 1) if active_strategies >= 4 else 3
+        # Minimum ovoz soni - total strategiyalardan kelib chiqadi
+        # 6 strategiya uchun min 4 ta (66%)
+        min_votes = max(1, ceil(total_strategies * self.min_vote_ratio))
         
         # MINIMUM AVG CONFIDENCE - bu qiymatdan past bo'lsa signal chiqmaydi
         MIN_AVG_CONFIDENCE = 35.0
         
         # Votes bonus - har bir qo'shimcha vote uchun +5%
-        # Bu strategiyalar ko'p agree bo'lganda confidence ni biroz oshiradi
+        # Weight bilan yaqinlashtirilgan bonus
         VOTE_BONUS = 5.0  # Har bir qo'shimcha vote uchun
-        
+
         long_bonus = max(0, (long_votes - min_votes)) * VOTE_BONUS
         short_bonus = max(0, (short_votes - min_votes)) * VOTE_BONUS
         
@@ -202,6 +315,9 @@ class SignalAggregator:
             long_votes=long_votes,
             short_votes=short_votes,
             neutral_votes=neutral_votes,
+            filtered_votes=filtered_votes,
+            long_weight_sum=long_weight_sum,
+            short_weight_sum=short_weight_sum,
             weighted_long_confidence=avg_long_confidence,
             weighted_short_confidence=avg_short_confidence
         )
@@ -266,7 +382,8 @@ class SignalAggregator:
         
         text += f"📈 Long: {signal.long_votes}/{total_strategies} (score: {signal.weighted_long_confidence:.1f}%)\n"
         text += f"📉 Short: {signal.short_votes}/{total_strategies} (score: {signal.weighted_short_confidence:.1f}%)\n"
-        text += f"➖ Neutral: {signal.neutral_votes}\n\n"
+        text += f"➖ Neutral: {signal.neutral_votes}\n"
+        text += f"⚠️ Filtered (low conf): {signal.filtered_votes}\n\n"
         
         # Strategiya natijalarini ko'rsatish
         text += "**Strategy Details:**\n"

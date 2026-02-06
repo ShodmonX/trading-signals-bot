@@ -39,8 +39,8 @@ def start_scheduler(bot, check_signals):
         'cron',
         name="check_1h",
         hour='*/1',
-        minute=45,
-        second=1,
+        minute=0,
+        second=45,
         kwargs={'bot': bot, 'interval': '1h'},
         id='check_1h'
     )

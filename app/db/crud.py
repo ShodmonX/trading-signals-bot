@@ -181,6 +181,15 @@ class StrategyCRUD():
             await self.session.commit()
             await self.session.refresh(strategy)
         return strategy
+
+    async def update_performance_weight(self, code: str, weight: float):
+        """Strategiya performance weight ni yangilash"""
+        strategy = await self.get_by_code(code)
+        if strategy:
+            strategy.performance_weight = weight
+            await self.session.commit()
+            await self.session.refresh(strategy)
+        return strategy
     
 
 class CryptoCRUD():

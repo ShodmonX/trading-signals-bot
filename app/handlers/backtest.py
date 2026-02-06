@@ -441,6 +441,37 @@ async def backtest_send_existing_pdf(callback: CallbackQuery, state: FSMContext)
                 summary.trades.append(trade)
         except Exception as e:
             logging.error(f"Trades JSON parse error: {e}")
+
+    # Strategiya performance ni yuklash
+    if result.strategy_performance_json:
+        try:
+            from app.services.backtester import StrategyPerformance
+            perf_data = json.loads(result.strategy_performance_json)
+            for p in perf_data:
+                summary.strategy_performance.append(StrategyPerformance(
+                    code=p.get("code", ""),
+                    name=p.get("name", ""),
+                    total_signals=p.get("total_signals", 0),
+                    wins=p.get("wins", 0),
+                    losses=p.get("losses", 0),
+                    partial_wins=p.get("partial_wins", 0),
+                    timeouts=p.get("timeouts", 0),
+                    total_profit_percent=p.get("total_profit_percent", 0.0),
+                    average_profit=p.get("average_profit", 0.0),
+                    average_loss=p.get("average_loss", 0.0),
+                    profit_factor=p.get("profit_factor", 0.0),
+                    win_rate=p.get("win_rate", 0.0),
+                    current_weight=p.get("current_weight", 1.0),
+                    suggested_weight=p.get("suggested_weight", 1.0),
+                    base_weight=p.get("base_weight", 1.0),
+                    perf_weight=p.get("perf_weight", 1.0),
+                    regime_mult=p.get("regime_mult", 1.0),
+                    stability_weight=p.get("stability_weight", 1.0),
+                    corr_penalty=p.get("corr_penalty", 1.0),
+                    actual_weight=p.get("actual_weight", 1.0),
+                ))
+        except Exception as e:
+            logging.error(f"Strategy performance JSON parse error: {e}")
     
     try:
         pdf_buffer = generate_backtest_pdf(summary)
@@ -600,6 +631,9 @@ async def save_backtest_result(
             "sl_hit_at": trade.sl_hit_at,
             "total_profit_percent": trade.total_profit_percent,
         })
+
+    # Strategiya performance ni JSON ga aylantirish
+    strategy_perf_data = [sp.to_dict() for sp in summary.strategy_performance]
     
     try:
         async with get_session() as session:
@@ -629,6 +663,7 @@ async def save_backtest_result(
                 "profit_factor": summary.profit_factor,
                 "win_rate": summary.win_rate,
                 "trades_json": json.dumps(trades_data),
+                "strategy_performance_json": json.dumps(strategy_perf_data),
             })
             return result.id
     except Exception as e:
@@ -702,6 +737,28 @@ async def send_backtest_summary(message: Message, summary: BacktestSummary, resu
 <i>💡 Partial close: TP1=40%, TP2=30%, TP3=30%
 SL hit bo'lganda qolgan pozitsiya yopiladi.</i>
 """
+
+    if summary.strategy_performance:
+        text += "\n\n<b>🧩 Strategiyalar performance:</b>\n"
+        for perf in summary.strategy_performance:
+            text += (
+                f"• {perf.name}: "
+                f"WR {perf.win_rate:.1f}% | "
+                f"PF {perf.profit_factor:.2f} | "
+                f"P&L {perf.total_profit_percent:.2f}% | "
+                f"W {perf.current_weight:.2f} → {perf.suggested_weight:.2f}\n"
+            )
+        text += "\n<b>⚙️ Weight breakdown (debug):</b>\n"
+        for perf in summary.strategy_performance:
+            text += (
+                f"• {perf.name}: "
+                f"base {perf.base_weight:.2f} | "
+                f"perf {perf.perf_weight:.2f} | "
+                f"reg {perf.regime_mult:.2f} | "
+                f"stab {perf.stability_weight:.2f} | "
+                f"corr {perf.corr_penalty:.2f} | "
+                f"actual {perf.actual_weight:.2f}\n"
+            )
     
     # Saqlangan bo'lsa xabar qo'shish
     if result_id:

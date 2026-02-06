@@ -10,6 +10,7 @@ services:
     volumes:
       - .:/app
       - ./alembic:/app/alembic
+      - ./data:/app/data
   db:
     image: postgres:15-alpine
     environment:

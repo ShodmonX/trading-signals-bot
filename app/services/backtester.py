@@ -8,16 +8,35 @@ import asyncio
 import random
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
+from pathlib import Path
 
 import pandas as pd
+import numpy as np
+from ta.volatility import AverageTrueRange
+from ta.trend import ADXIndicator
 
 from app.services.api import get_klines, BinanceAPI
-from app.strategies.aggregator import SignalAggregator, AggregatedSignal
-from app.services.strategy_registry import get_all_strategy_classes
-from app.config import SIGNAL_THRESHOLD, STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIERS
+from app.strategies.aggregator import (
+    SignalAggregator,
+    AggregatedSignal,
+    ADX_TREND_THRESHOLD,
+    ADX_RANGE_THRESHOLD,
+    TREND_STRATEGY_NAMES,
+    RANGE_STRATEGY_NAMES,
+    TREND_BOOST,
+    TREND_DAMPEN,
+    RANGE_BOOST,
+    RANGE_DAMPEN,
+)
+from app.services.strategy_registry import (
+    StrategyConfig,
+    get_active_strategy_configs,
+    get_fallback_strategy_configs,
+)
+from app.config import SIGNAL_THRESHOLD, STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIERS, DATA_CACHE_DIR
 
 
 # Partial close foizlari
@@ -138,6 +157,55 @@ class TradeResult:
 
 
 @dataclass
+class StrategyPerformance:
+    """Har bir strategiya uchun backtest natijalari"""
+    code: str
+    name: str
+    total_signals: int = 0
+    wins: int = 0
+    losses: int = 0
+    partial_wins: int = 0
+    timeouts: int = 0
+    total_profit_percent: float = 0.0
+    average_profit: float = 0.0
+    average_loss: float = 0.0
+    profit_factor: float = 0.0
+    win_rate: float = 0.0
+    current_weight: float = 1.0
+    suggested_weight: float = 1.0
+    base_weight: float = 1.0
+    perf_weight: float = 1.0
+    regime_mult: float = 1.0
+    stability_weight: float = 1.0
+    corr_penalty: float = 1.0
+    actual_weight: float = 1.0
+
+    def to_dict(self) -> dict:
+        return {
+            "code": self.code,
+            "name": self.name,
+            "total_signals": self.total_signals,
+            "wins": self.wins,
+            "losses": self.losses,
+            "partial_wins": self.partial_wins,
+            "timeouts": self.timeouts,
+            "total_profit_percent": self.total_profit_percent,
+            "average_profit": self.average_profit,
+            "average_loss": self.average_loss,
+            "profit_factor": self.profit_factor,
+            "win_rate": self.win_rate,
+            "current_weight": self.current_weight,
+            "suggested_weight": self.suggested_weight,
+            "base_weight": self.base_weight,
+            "perf_weight": self.perf_weight,
+            "regime_mult": self.regime_mult,
+            "stability_weight": self.stability_weight,
+            "corr_penalty": self.corr_penalty,
+            "actual_weight": self.actual_weight,
+        }
+
+
+@dataclass
 class BacktestSummary:
     """Backtest natijasi - umumiy statistika"""
     session_id: str
@@ -176,6 +244,9 @@ class BacktestSummary:
     
     # Trade natijalar ro'yxati
     trades: list[TradeResult] = field(default_factory=list)
+
+    # Strategiyalar performance natijalari
+    strategy_performance: list[StrategyPerformance] = field(default_factory=list)
     
     created_at: datetime = field(default_factory=datetime.now)
 
@@ -195,6 +266,13 @@ TIMEFRAME_MINUTES = {
     "12h": 720,
     "1d": 1440,
 }
+
+# Kline CSV columns (Binance API order)
+KLINE_COLUMNS = [
+    "timestamp", "open", "high", "low", "close", "volume",
+    "close_time", "quote_asset_volume", "trades", "taker_base_vol",
+    "taker_quote_vol", "ignore"
+]
 
 
 def get_smallest_execution_tf(signal_tf: str) -> str:
@@ -221,10 +299,17 @@ class Backtester:
         self.threshold = threshold
         
         self.session_id = str(uuid4())[:8]
+        self.cache_dir = Path(DATA_CACHE_DIR)
         
         # Ma'lumotlar
         self.execution_candles: list = []
         self.signal_candles: list = []
+
+        # Strategiyalar (active) va weight mapping
+        self.strategy_configs: list[StrategyConfig] = []
+        self.strategy_weights: dict[str, float] = {}
+        self.strategy_code_map: dict[str, str] = {}
+        self.strategy_name_map: dict[str, str] = {}
         
     async def fetch_historical_data(
         self,
@@ -282,15 +367,57 @@ class Backtester:
         
         return sorted_candles
     
-    async def fetch_data_by_chunks(
+    def _month_key(self, dt: datetime) -> str:
+        return f"{dt.year:04d}_{dt.month:02d}"
+
+    def _month_bounds(self, dt: datetime) -> tuple[int, int]:
+        """Oyning boshi va oxiri (UTC, ms)"""
+        start = datetime(dt.year, dt.month, 1, 0, 0, 0, tzinfo=timezone.utc)
+        if dt.month == 12:
+            next_month = datetime(dt.year + 1, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        else:
+            next_month = datetime(dt.year, dt.month + 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        start_ms = int(start.timestamp() * 1000)
+        end_ms = int(next_month.timestamp() * 1000) - 1
+        return start_ms, end_ms
+
+    def _iter_months(self, start_time: int, end_time: int) -> list[datetime]:
+        """start/end oralig'ida oylik datetime list (UTC)"""
+        start_dt = datetime.fromtimestamp(start_time / 1000, tz=timezone.utc)
+        end_dt = datetime.fromtimestamp(end_time / 1000, tz=timezone.utc)
+        current = datetime(start_dt.year, start_dt.month, 1, 0, 0, 0, tzinfo=timezone.utc)
+        end_month = datetime(end_dt.year, end_dt.month, 1, 0, 0, 0, tzinfo=timezone.utc)
+        months = []
+        while current <= end_month:
+            months.append(current)
+            if current.month == 12:
+                current = datetime(current.year + 1, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+            else:
+                current = datetime(current.year, current.month + 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        return months
+
+    def _month_cache_path(self, symbol: str, month_key: str) -> Path:
+        return self.cache_dir / symbol / f"{month_key}.csv"
+
+    def _load_month_from_cache(self, path: Path) -> list:
+        df = pd.read_csv(path)
+        return df[KLINE_COLUMNS].values.tolist()
+
+    def _save_month_to_cache(self, path: Path, candles: list) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df = pd.DataFrame(candles, columns=KLINE_COLUMNS)
+        df.to_csv(path, index=False)
+
+    async def _fetch_range_by_chunks(
         self,
         interval: str,
         start_time: int,
         end_time: int,
         progress_callback=None,
+        progress_prefix: str | None = None,
     ) -> list:
         """
-        Ko'p chunklarda ma'lumot olish.
+        Ko'p chunklarda ma'lumot olish (API).
         Bunda startTime va endTime parametrlaridan foydalanamiz.
         """
         all_candles = []
@@ -345,9 +472,10 @@ class Backtester:
                             load_percent = int((len(all_candles) / max(expected_candles, 1)) * 100)
                             # Umumiy progress: data yuklash 0-20% oralig'ida
                             overall_progress = min(20, load_percent // 5)
+                            prefix = f"{progress_prefix} " if progress_prefix else ""
                             await progress_callback(
                                 overall_progress, 100, 
-                                f"📥 Ma'lumot: {len(all_candles):,} / ~{expected_candles:,} ({load_percent}%)"
+                                f"{prefix}📥 Ma'lumot: {len(all_candles):,} / ~{expected_candles:,} ({load_percent}%)"
                             )
                         
                         logging.debug(
@@ -378,6 +506,56 @@ class Backtester:
         unique_candles = {c[0]: c for c in all_candles}
         sorted_candles = sorted(unique_candles.values(), key=lambda x: x[0])
         
+        return sorted_candles
+
+    async def fetch_data_by_chunks(
+        self,
+        interval: str,
+        start_time: int,
+        end_time: int,
+        progress_callback=None,
+    ) -> list:
+        """
+        Oylik cache bilan ma'lumot olish.
+        Har oy alohida CSV faylga saqlanadi va qayta ishlatiladi.
+        """
+        all_candles: list = []
+        months = self._iter_months(start_time, end_time)
+
+        for month_dt in months:
+            month_key = self._month_key(month_dt)
+            month_start, month_end = self._month_bounds(month_dt)
+            cache_path = self._month_cache_path(self.symbol, month_key)
+
+            now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+            should_refresh = month_end > now_ms
+
+            if cache_path.exists() and not should_refresh:
+                try:
+                    candles = self._load_month_from_cache(cache_path)
+                except Exception as e:
+                    logging.warning(f"Cache read error {cache_path}: {e}")
+                    candles = []
+            else:
+                candles = []
+
+            if not candles:
+                candles = await self._fetch_range_by_chunks(
+                    interval=interval,
+                    start_time=month_start,
+                    end_time=month_end,
+                    progress_callback=progress_callback,
+                    progress_prefix=f"🗓 {month_key}"
+                )
+                if candles:
+                    self._save_month_to_cache(cache_path, candles)
+
+            # Faqat kerakli vaqt oralig'ini qoldiramiz
+            filtered = [c for c in candles if start_time <= c[0] <= end_time]
+            all_candles.extend(filtered)
+
+        unique_candles = {c[0]: c for c in all_candles}
+        sorted_candles = sorted(unique_candles.values(), key=lambda x: x[0])
         return sorted_candles
     
     def aggregate_candles(self, candles_small: list, target_tf: str) -> list:
@@ -420,28 +598,198 @@ class Backtester:
             ])
         
         return aggregated
+
+    async def _load_strategy_configs(self) -> None:
+        """DB dan faol strategiyalar konfiguratsiyasini yuklash"""
+        configs = await get_active_strategy_configs()
+        if not configs:
+            configs = get_fallback_strategy_configs()
+        self.strategy_configs = configs
+        self.strategy_weights = {
+            cfg.cls.__name__: cfg.performance_weight for cfg in configs
+        }
+        self.strategy_code_map = {cfg.cls.__name__: cfg.code for cfg in configs}
+        self.strategy_name_map = {cfg.cls.__name__: cfg.name for cfg in configs}
+
+    def _compute_atr(self, historical_data: list) -> float:
+        """ATR ni hisoblash (signal timeframe)"""
+        if len(historical_data) < 14:
+            return 0.0
+        df = pd.DataFrame(historical_data, columns=KLINE_COLUMNS)
+        df[['open', 'high', 'low', 'close', 'volume']] = \
+            df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+        atr_indicator = AverageTrueRange(
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            window=14,
+            fillna=True
+        )
+        atr = float(atr_indicator.average_true_range().iloc[-1])
+        return 0.0 if pd.isna(atr) else atr
+
+    def _compute_adx(self, historical_data: list) -> float:
+        """ADX ni hisoblash (signal timeframe)"""
+        if len(historical_data) < 14:
+            return 0.0
+        df = pd.DataFrame(historical_data, columns=KLINE_COLUMNS)
+        df[['open', 'high', 'low', 'close', 'volume']] = \
+            df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+        adx_indicator = ADXIndicator(
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            window=14
+        )
+        adx = float(adx_indicator.adx().iloc[-1])
+        return 0.0 if pd.isna(adx) else adx
+
+    def _get_regime_multiplier(self, adx_value: float, strategy_name: str) -> float:
+        """ADX ga ko'ra strategiya uchun regime multiplier"""
+        if adx_value >= ADX_TREND_THRESHOLD:
+            if strategy_name in TREND_STRATEGY_NAMES:
+                return TREND_BOOST
+            if strategy_name in RANGE_STRATEGY_NAMES:
+                return TREND_DAMPEN
+        if adx_value <= ADX_RANGE_THRESHOLD:
+            if strategy_name in RANGE_STRATEGY_NAMES:
+                return RANGE_BOOST
+            if strategy_name in TREND_STRATEGY_NAMES:
+                return RANGE_DAMPEN
+        return 1.0
+
+    def _compute_stability_weight(self, returns: list[float]) -> float:
+        """Stability weight (volatility penalti)"""
+        if len(returns) < 2:
+            return 1.0
+        std = float(np.std(returns))
+        scale = 5.0
+        raw = 1.0 / (1.0 + (std / scale)) if std >= 0 else 1.0
+        return max(0.5, min(1.5, raw))
+
+    def _compute_correlation_penalties(self, returns_by_time: dict[str, dict[int, float]]) -> dict[str, float]:
+        """Strategiyalar orasidagi korrelyatsiya penalti"""
+        penalties: dict[str, float] = {}
+        codes = list(returns_by_time.keys())
+        for code in codes:
+            corr_vals: list[float] = []
+            series = returns_by_time.get(code, {})
+            for other in codes:
+                if other == code:
+                    continue
+                other_series = returns_by_time.get(other, {})
+                common_times = set(series.keys()) & set(other_series.keys())
+                if len(common_times) < 5:
+                    continue
+                x = np.array([series[t] for t in common_times], dtype=float)
+                y = np.array([other_series[t] for t in common_times], dtype=float)
+                if np.std(x) == 0 or np.std(y) == 0:
+                    continue
+                corr = float(np.corrcoef(x, y)[0, 1])
+                if not np.isnan(corr):
+                    corr_vals.append(abs(corr))
+            if not corr_vals:
+                penalties[code] = 1.0
+            else:
+                avg_corr = float(np.mean(corr_vals))
+                raw = 1.0 - (0.5 * avg_corr)
+                penalties[code] = max(0.5, min(1.0, raw))
+        return penalties
+
+    def _apply_sl_tp(self, signal: AggregatedSignal, atr: float) -> None:
+        """ATR asosida Stop Loss va Take Profit hisoblash"""
+        if atr <= 0:
+            return
+        if signal.direction == "LONG":
+            signal.stop_loss = signal.entry_price - (STOP_LOSS_MULTIPLIER * atr)
+            for i, mul in enumerate(TAKE_PROFIT_MULTIPLIERS, start=1):
+                setattr(signal, f'take_profit_{i}', signal.entry_price + (mul * atr))
+        elif signal.direction == "SHORT":
+            signal.stop_loss = signal.entry_price + (STOP_LOSS_MULTIPLIER * atr)
+            for i, mul in enumerate(TAKE_PROFIT_MULTIPLIERS, start=1):
+                setattr(signal, f'take_profit_{i}', signal.entry_price - (mul * atr))
+
+    def _calculate_performance_weight(self, stats: dict) -> float:
+        """Performance weight hisoblash (hozircha bir xil)"""
+        pf = stats.get("profit_factor", 0.0)
+        win_rate = stats.get("win_rate", 0.0)
+        total_signals = stats.get("total_signals", 0)
+
+        # PF + WinRate asosida weight
+        raw = (pf / 1.1) * ((win_rate / 55.0) ** 0.5) if pf > 0 and win_rate > 0 else 0.3
+        weight = max(0.3, min(2.5, raw))
+
+        # Kichik sample uchun 1.0 ga shrink
+        alpha = min(1.0, total_signals / 30) if total_signals > 0 else 0.0
+        final_weight = 1.0 + alpha * (weight - 1.0)
+        return round(final_weight, 4)
+
+    def _calculate_strategy_stats(self, trades: list[TradeResult]) -> dict:
+        """Strategiya bo'yicha statistikani hisoblash"""
+        stats = {
+            "total_signals": 0,
+            "wins": 0,
+            "losses": 0,
+            "partial_wins": 0,
+            "timeouts": 0,
+            "total_profit_percent": 0.0,
+            "average_profit": 0.0,
+            "average_loss": 0.0,
+            "max_profit": 0.0,
+            "max_loss": 0.0,
+            "profit_factor": 0.0,
+            "win_rate": 0.0,
+        }
+        if not trades:
+            return stats
+        stats["total_signals"] = len(trades)
+        stats["wins"] = sum(1 for t in trades if t.tp1_hit and not t.sl_hit)
+        stats["losses"] = sum(1 for t in trades if t.sl_hit and not t.tp1_hit)
+        stats["partial_wins"] = sum(1 for t in trades if t.tp1_hit and t.sl_hit)
+        stats["timeouts"] = sum(1 for t in trades if t.result == "TIMEOUT")
+
+        profits = [t.total_profit_percent for t in trades if t.total_profit_percent > 0]
+        losses = [t.total_profit_percent for t in trades if t.total_profit_percent < 0]
+
+        stats["total_profit_percent"] = sum(t.total_profit_percent for t in trades)
+        stats["average_profit"] = sum(profits) / len(profits) if profits else 0.0
+        stats["average_loss"] = abs(sum(losses) / len(losses)) if losses else 0.0
+        stats["max_profit"] = max(profits) if profits else 0.0
+        stats["max_loss"] = abs(min(losses)) if losses else 0.0
+
+        gross_profit = sum(profits)
+        gross_loss = abs(sum(losses))
+        stats["profit_factor"] = gross_profit / gross_loss if gross_loss > 0 else 0.0
+
+        total_closed = stats["wins"] + stats["losses"] + stats["partial_wins"]
+        if total_closed > 0:
+            stats["win_rate"] = (stats["wins"] + stats["partial_wins"]) / total_closed * 100
+        return stats
     
     async def generate_signal(self, historical_data: list) -> AggregatedSignal | None:
         """Berilgan ma'lumotlar asosida signal generatsiya qilish"""
         if len(historical_data) < 100:
             return None
-        
+
         try:
-            # DB ga bog'liq bo'lmagan - barcha strategiyalarni olish
-            strategy_classes = get_all_strategy_classes()
-            
+            if not self.strategy_configs:
+                await self._load_strategy_configs()
+
+            strategy_classes = [cfg.cls for cfg in self.strategy_configs]
+
             aggregator = SignalAggregator(
                 data=historical_data,
                 symbol=self.symbol,
                 strategies=strategy_classes,
                 threshold=self.threshold,
                 stop_multiplier=STOP_LOSS_MULTIPLIER,
-                tp_multipliers=TAKE_PROFIT_MULTIPLIERS
+                tp_multipliers=TAKE_PROFIT_MULTIPLIERS,
+                strategy_weights=self.strategy_weights,
             )
-            
+
             signal = aggregator.run()
             return signal
-            
+
         except Exception as e:
             logging.error(f"Signal generation error: {e}")
             return None
@@ -602,6 +950,9 @@ class Backtester:
             period_start=self.start_date,
             period_end=self.end_date,
         )
+
+        # Strategiyalarni yuklash (faqat bir marta)
+        await self._load_strategy_configs()
         
         start_ts = int(self.start_date.timestamp() * 1000)
         end_ts = int(self.end_date.timestamp() * 1000)
@@ -656,6 +1007,20 @@ class Backtester:
         
         position_open = False
         position_close_candle = start_index
+
+        # Strategiya bo'yicha tracking
+        strategy_trades: dict[str, list[TradeResult]] = {
+            cfg.code: [] for cfg in self.strategy_configs
+        }
+        strategy_position_open: dict[str, bool] = {
+            cfg.code: False for cfg in self.strategy_configs
+        }
+        strategy_close_candle: dict[str, int] = {
+            cfg.code: start_index for cfg in self.strategy_configs
+        }
+        strategy_regime_mults: dict[str, list[float]] = {
+            cfg.code: [] for cfg in self.strategy_configs
+        }
         
         for i in range(start_index, total_candles):
             # Progress
@@ -671,29 +1036,38 @@ class Backtester:
                     continue
                 else:
                     position_open = False
+
+            # Strategiyalar bo'yicha position holatini yangilash
+            for code in list(strategy_position_open.keys()):
+                if strategy_position_open[code] and i >= strategy_close_candle[code]:
+                    strategy_position_open[code] = False
             
             historical_data = self.signal_candles[:i + 1]
             signal = await self.generate_signal(historical_data)
-            
-            if signal and signal.direction != "NEUTRAL":
+            if not signal:
+                continue
+
+            signal_time = self.signal_candles[i][6]
+
+            signal_minutes = TIMEFRAME_MINUTES[self.signal_timeframe]
+            exec_minutes = TIMEFRAME_MINUTES[self.execution_timeframe]
+            max_exec_candles = 24 * (signal_minutes // exec_minutes)
+
+            # Ensemble trade
+            if signal.direction != "NEUTRAL":
                 signals_found += 1
-                signal_time = self.signal_candles[i][6]
-                
-                signal_minutes = TIMEFRAME_MINUTES[self.signal_timeframe]
-                exec_minutes = TIMEFRAME_MINUTES[self.execution_timeframe]
-                max_exec_candles = 24 * (signal_minutes // exec_minutes)
-                
+
                 trade = self.simulate_trade(
                     signal=signal,
                     signal_time=signal_time,
                     execution_candles=self.execution_candles,
                     max_candles=max_exec_candles
                 )
-                
+
                 summary.trades.append(trade)
-                
+
                 position_open = True
-                
+
                 if trade.exit_time:
                     exit_ts = int(trade.exit_time.timestamp() * 1000)
                     found = False
@@ -706,12 +1080,114 @@ class Backtester:
                         position_close_candle = min(i + 25, total_candles)
                 else:
                     position_close_candle = min(i + 25, total_candles)
+
+            # Strategiyalar bo'yicha trade simulyatsiya
+            atr_value: float | None = None
+            adx_value: float | None = None
+            for result in signal.strategy_results:
+                code = self.strategy_code_map.get(result.name)
+                if not code:
+                    continue
+
+                if strategy_position_open.get(code):
+                    if i < strategy_close_candle.get(code, start_index):
+                        continue
+                    strategy_position_open[code] = False
+
+                if result.direction == "NEUTRAL" or result.confidence < self.threshold:
+                    continue
+
+                if atr_value is None:
+                    atr_value = self._compute_atr(historical_data)
+                if atr_value <= 0:
+                    continue
+                if adx_value is None:
+                    adx_value = self._compute_adx(historical_data)
+
+                strategy_signal = AggregatedSignal(
+                    direction=result.direction,
+                    confidence=result.confidence,
+                    entry_price=signal.entry_price,
+                )
+                self._apply_sl_tp(strategy_signal, atr_value)
+
+                trade = self.simulate_trade(
+                    signal=strategy_signal,
+                    signal_time=signal_time,
+                    execution_candles=self.execution_candles,
+                    max_candles=max_exec_candles
+                )
+                strategy_trades.setdefault(code, []).append(trade)
+                regime_mult = self._get_regime_multiplier(adx_value, result.name)
+                strategy_regime_mults.setdefault(code, []).append(regime_mult)
+
+                strategy_position_open[code] = True
+
+                if trade.exit_time:
+                    exit_ts = int(trade.exit_time.timestamp() * 1000)
+                    found = False
+                    for j in range(i + 1, min(i + 30, total_candles)):
+                        if self.signal_candles[j][0] >= exit_ts:
+                            strategy_close_candle[code] = j
+                            found = True
+                            break
+                    if not found:
+                        strategy_close_candle[code] = min(i + 25, total_candles)
+                else:
+                    strategy_close_candle[code] = min(i + 25, total_candles)
         
         # 4. Statistika hisoblash
         if progress_callback:
             await progress_callback(95, 100, "📈 Statistika hisoblanmoqda...")
         
         self._calculate_statistics(summary)
+
+        # Strategiyalar performance hisoblash
+        summary.strategy_performance = []
+        returns_by_time: dict[str, dict[int, float]] = {}
+        for cfg in self.strategy_configs:
+            trades = strategy_trades.get(cfg.code, [])
+            returns_by_time[cfg.code] = {
+                int(t.signal_time.timestamp()): t.total_profit_percent for t in trades
+            }
+        corr_penalties = self._compute_correlation_penalties(returns_by_time)
+        for cfg in self.strategy_configs:
+            trades = strategy_trades.get(cfg.code, [])
+            stats = self._calculate_strategy_stats(trades)
+            returns = [t.total_profit_percent for t in trades]
+            stability_weight = self._compute_stability_weight(returns)
+            corr_penalty = corr_penalties.get(cfg.code, 1.0)
+            regime_list = strategy_regime_mults.get(cfg.code, [])
+            regime_mult = float(np.mean(regime_list)) if regime_list else 1.0
+
+            base_weight = getattr(cfg.cls, "weight", 1.0)
+            perf_weight = cfg.performance_weight
+            actual_weight = base_weight * perf_weight * regime_mult * stability_weight * corr_penalty
+            actual_weight = max(0.1, min(3.0, actual_weight))
+
+            perf = StrategyPerformance(
+                code=cfg.code,
+                name=cfg.name,
+                total_signals=stats["total_signals"],
+                wins=stats["wins"],
+                losses=stats["losses"],
+                partial_wins=stats["partial_wins"],
+                timeouts=stats["timeouts"],
+                total_profit_percent=stats["total_profit_percent"],
+                average_profit=stats["average_profit"],
+                average_loss=stats["average_loss"],
+                profit_factor=stats["profit_factor"],
+                win_rate=stats["win_rate"],
+                current_weight=cfg.performance_weight,
+                suggested_weight=self._calculate_performance_weight(stats),
+                base_weight=base_weight,
+                perf_weight=perf_weight,
+                regime_mult=regime_mult,
+                stability_weight=stability_weight,
+                corr_penalty=corr_penalty,
+                actual_weight=actual_weight,
+            )
+            summary.strategy_performance.append(perf)
         
         if progress_callback:
             await progress_callback(100, 100, "✅ Backtest tugadi!")

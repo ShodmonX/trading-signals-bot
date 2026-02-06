@@ -51,6 +51,9 @@ class Strategy(Base):
     name:       Mapped[str] = mapped_column(String, nullable=False)
     code:       Mapped[str] = mapped_column(String, nullable=False)
     is_active:  Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("'true'"))
+    performance_weight: Mapped[float] = mapped_column(
+        Float, default=1.0, server_default=text("1.0")
+    )
 
     signals = relationship("Signal", back_populates="strategy")
 
@@ -71,7 +74,8 @@ class Strategy(Base):
             "id": self.id,
             "name": self.name,
             "code": self.code,
-            "is_active": self.is_active
+            "is_active": self.is_active,
+            "performance_weight": self.performance_weight,
         }
 
 
@@ -206,6 +210,9 @@ class BacktestResult(Base):
     
     # Trade ma'lumotlari (JSON sifatida)
     trades_json:        Mapped[str | None]      = mapped_column(Text, nullable=True)
+
+    # Strategiyalar performance ma'lumotlari (JSON)
+    strategy_performance_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     
     # PDF file path
     pdf_path:           Mapped[str | None]      = mapped_column(String(500), nullable=True)
@@ -237,7 +244,8 @@ class BacktestResult(Base):
             "win_rate": self.win_rate,
             "total_profit": self.total_profit,
             "profit_factor": self.profit_factor,
-            "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else None
+            "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else None,
+            "strategy_performance_json": self.strategy_performance_json,
         }
 
 
